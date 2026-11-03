@@ -21,7 +21,57 @@ suppress_console()
 import diagnostics as diag
 diag.setup()
 from diagnostics import stage
-from qt_browser import BrowserPane, DEBUG_PORT, READY_SCRIPT
+
+
+def _fatal_missing_dependency(exc):
+    """Понятное сообщение вместо молчаливого выхода (v26).
+
+    Раньше при нехватке PyQt6-WebEngine приложение умирало на импорте
+    `qt_browser`, и единственным следом была строка в логе:
+    `ModuleNotFoundError` + `qt_browser.py line 18` — со стороны это выглядело
+    как «программа не запускается и ничего не говорит». Теперь причина
+    называется прямо, с командой установки, а лог остаётся на месте.
+    """
+    try:
+        diag.exception("main.import_qt_browser")
+    except Exception:
+        pass
+    message = (
+        "Legalyze не может запуститься: не установлен компонент PyQt6-WebEngine.\n\n"
+        f"Техническая причина: {exc}\n\n"
+        "Установите зависимости из папки программы:\n"
+        "    pip install -r requirements.txt\n\n"
+        "Если PyQt6 уже стоял, доставьте отдельно:\n"
+        "    pip install PyQt6-WebEngine\n\n"
+        "Логи: " + str(getattr(diag, "LOG_DIR", ""))
+    )
+    shown = False
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(
+                None, message, "Legalyze — не хватает компонента", 0x10)
+            shown = True
+        except Exception:
+            shown = False
+    if not shown:
+        # Консоль к этому моменту уже отсоединена — пишем в поток ошибок и в лог.
+        try:
+            sys.stderr.write(message + "\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+
+
+try:
+    from qt_browser import BrowserPane, DEBUG_PORT, READY_SCRIPT
+except ModuleNotFoundError as _qt_exc:
+    _fatal_missing_dependency(_qt_exc)
+    sys.exit(2)
+except Exception as _qt_exc:  # noqa: BLE001 — прочее тоже не должно быть «тишиной»
+    _fatal_missing_dependency(_qt_exc)
+    sys.exit(2)
+
 import storage_paths
 # v20: приборная панель браузера. Импорт — сразу после `diagnostics.setup()`:
 # ниже, рядом с `diag.install_http()`, модуль уже включается в работу. Собирает
