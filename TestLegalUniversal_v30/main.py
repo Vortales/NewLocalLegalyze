@@ -5255,6 +5255,13 @@ class MainWindow(QMainWindow):
         self._document_doc = document
         self._document_pngs = list(pngs or [])
         self.document_path = Path(chat_txt) if chat_txt else None
+        # v30.3: запоминаем ровно тот текст, который уходит в чат. Заявка
+        # начинается словом «ПОСТАНОВЛЕНИЕ» и кончается «===КОНЕЦ ОТВЕТА===»,
+        # поэтому её легко принять за ответ ИИ и собрать PNG из конструктора.
+        try:
+            self._doc_request_text = Path(chat_txt).read_text(encoding="utf-8")
+        except Exception:
+            self._doc_request_text = ""
         diag.event("documents.formed", number=document.get("doc_number"),
                    pngs=len(self._document_pngs),
                    txt=Path(chat_txt).name if chat_txt else "")
@@ -5344,6 +5351,7 @@ class MainWindow(QMainWindow):
             self._doc_watch_timer = QTimer(self)
             self._doc_watch_timer.setInterval(2500)
             self._doc_watch_timer.timeout.connect(self._poll_document_answer)
+        self._doc_last_text = None
         self._doc_watch_deadline = time.monotonic() + 180
         self._doc_watch_timer.start()
 
@@ -5391,6 +5399,18 @@ class MainWindow(QMainWindow):
         text = str(text or "")
         if not text.strip():
             return
+        # v30.3: это наша же заявка в чате, а не ответ ИИ — ждём дальше.
+        # Иначе PNG собирался из данных конструктора (заявка тоже содержит
+        # «ПОСТАНОВЛЕНИЕ» и «===КОНЕЦ ОТВЕТА===»).
+        request_text = getattr(self, "_doc_request_text", "") or ""
+        if request_text and pdoc.is_own_request(text, request_text):
+            diag.event("documents.skip_own_request", chars=len(text))
+            return
+        # Ответ ИИ обязан содержать блок постановления. Без него — ничего не
+        # печатаем и не сохраняем: это либо эхо заявки, либо ещё «думает».
+        block = pdoc.extract_document_block(text)
+        if not block:
+            return
         # v30.1: ответ сохраняем ВСЕГДА и сразу — даже если разбор ниже упадёт
         # или документ пересобираться не будет. Требование: «текст, который
         # получаем от ИИ, должен сохраняться».
@@ -5405,11 +5425,23 @@ class MainWindow(QMainWindow):
             diag.event("documents.raw_saved", path=str(raw_path), chars=len(text))
         except Exception:
             diag.exception("documents.save_raw")
-        if not pdoc.has_document_trigger(text):
-            return
-        # Не ждём «===КОНЕЦ ОТВЕТА===»: ответ мог обрезаться, а данные в нём уже
-        # есть. Просто не трогаем документ, пока блок постановления не появился.
-        if not pdoc.extract_document_block(text) and not pdoc.has_answer_end(text):
+        # v30.3: пока ИИ печатает, бланк не собираем — только держим черновик
+        # ИИ-ответ.txt. Признак «ответ готов»: есть «===КОНЕЦ ОТВЕТА===» ИЛИ
+        # текст не изменился с прошлого опроса (ИИ перестал дописывать).
+        # Так PNG всегда собирается из ПОЛНОГО ответа, а не из половины, и при
+        # этом обрезанный ответ (без конечного маркера) тоже доходит до дела.
+        unchanged = (getattr(self, "_doc_last_text", None) == text)
+        self._doc_last_text = text
+        if not pdoc.has_answer_end(text) and not unchanged:
+            try:
+                folder_draft = pdoc.doc_folder(self._documents_root(),
+                                               (self._document_doc or pdoc.Postanovlenie())
+                                               .get("doc_number"))
+                (folder_draft / "ИИ-ответ.txt").write_text(
+                    text.replace("\r\n", "\n"), encoding="utf-8")
+            except Exception:
+                diag.exception("documents.save_draft")
+            diag.event("documents.answer_still_streaming", chars=len(text))
             return
         doc = pdoc.parse_ai_answer(text, base=self._document_doc)
         if doc is None:

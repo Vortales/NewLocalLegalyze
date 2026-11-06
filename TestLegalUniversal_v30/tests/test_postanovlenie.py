@@ -50,7 +50,7 @@ AI_ANSWER = """===ПОСТАНОВЛЕНИЕ===
 class TriggerTests(unittest.TestCase):
     def test_trigger_is_detected_in_any_spacing(self):
         for text in ("===ПОСТАНОВЛЕНИЕ===", "=== ПОСТАНОВЛЕНИЕ ===",
-                     "постановление:", "Конец: ===КОНЕЦ ПОСТАНОВЛЕНИЯ==="):
+                     "постановление: LSCSD-IAD-1", "Конец: ===КОНЕЦ ПОСТАНОВЛЕНИЯ==="):
             self.assertTrue(pdoc.has_document_trigger(text), text)
 
     def test_answer_end_is_detected_like_v26_client(self):
@@ -137,11 +137,13 @@ class DocumentTests(unittest.TestCase):
 
     def test_chat_txt_is_structured_and_named(self):
         text = self.doc.to_chat_txt()
-        self.assertTrue(text.startswith(pdoc.DOC_MARKER_NAME))
+        self.assertTrue(text.startswith("ЗАЯВКА НА ПОСТАНОВЛЕНИЕ"))
         self.assertIn("Номер: LSCSD-IAD-141", text)
-        self.assertIn("постановляющая часть", text.lower())
-        self.assertIn(pdoc.TRIGGER_ANSWER_END, text)
+        self.assertIn("Предлагаемые пункты", text)
+        # v30.3: в заявке НЕТ триггеров — иначе она принимается за ответ ИИ
+        self.assertNotIn(pdoc.TRIGGER_ANSWER_END, text)
         self.assertNotIn("===ПОСТАНОВЛЕНИЕ===", text)  # маркер выдаёт только ИИ
+        self.assertFalse(pdoc.has_document_trigger(text))
         self.assertEqual(self.doc.chat_txt_name(), "ПОСТАНОВЛЕНИЕ LSCSD-IAD-141.txt")
 
     def test_chat_txt_has_no_duplicated_fields(self):
@@ -237,8 +239,8 @@ All items removed from input context.
                                  subject_name="Aliya Nomad", subject_id="131485",
                                  situation="Нарушение дресс-кода.")
         text = doc.to_chat_txt()
-        self.assertIn("Взыскание: определить по обстоятельствам", text)
-        self.assertIn("Пункт нарушения: определить по обстоятельствам", text)
+        self.assertIn("Взыскание: нет данных — определи сам", text)
+        self.assertIn("Пункт нарушения: нет данных — определи сам", text)
         # без взыскания шаблонные пункты в заявку не попадают
         self.assertNotIn("Назначить сотруднику", text)
 
@@ -350,12 +352,13 @@ class RemarksV29Tests(unittest.TestCase):
         self.assertEqual(pdoc.split_subject("Aliya #131485", "131485")[0], "Aliya")
 
     # ── заявка просит ИИ переработать обстоятельства ──
-    def test_chat_txt_marks_the_situation_as_raw_user_words(self):
+    def test_chat_txt_keeps_the_words_without_service_marks(self):
+        """v30.3: слова пользователя уходят как есть, но без служебных помет."""
         doc = pdoc.Postanovlenie(doc_number="LSCSD-IAD-4", subject_name="Aliya Nomad",
                                  situation="задержал просто так и ходила с ним")
         text = doc.to_chat_txt()
-        self.assertIn("сырые слова пользователя", text)
-        self.assertIn("переработай", text)
+        self.assertIn("Обстоятельства: задержал просто так и ходила с ним", text)
+        self.assertNotIn("сырые слова", text.lower())
 
 
 class RemarksV30Tests(unittest.TestCase):
@@ -623,6 +626,74 @@ class FormDoesNotRenderTests(unittest.TestCase):
         main_src = Path("main.py").read_text(encoding="utf-8")
         self.assertIn("return Path(postanovlenie_dir(self.cfg))", main_src)
         self.assertNotIn("Path(postanovlenie_dir(self.cfg)).parent", main_src)
+
+
+class OwnRequestTests(unittest.TestCase):
+    """v30.3: главная причина — заявка принималась за ответ ИИ.
+
+    Заявка начиналась словом «ПОСТАНОВЛЕНИЕ» и кончалась «===КОНЕЦ ОТВЕТА===»,
+    клиент читал её из чата и печатал PNG из данных конструктора, а настоящий
+    ответ ИИ приходил позже и только перезаписывал ИИ-ответ.txt.
+    """
+
+    def _request(self, **kw):
+        return pdoc.Postanovlenie(**kw).to_chat_txt()
+
+    def test_request_is_not_mistaken_for_the_answer(self):
+        text = self._request(doc_number="LSCSD-IAD-1", subject_name="Aliya Nomad",
+                             subject_id="131485",
+                             situation="Сотрудник грубо нарушил дресс-код")
+        self.assertFalse(pdoc.has_document_trigger(text),
+                         "в заявке не должно быть триггера ответа")
+        self.assertEqual(pdoc.extract_document_block(text), "")
+        self.assertIsNone(pdoc.parse_ai_answer(text))
+
+    def test_request_has_no_service_marks(self):
+        text = self._request(doc_number="LSCSD-IAD-1",
+                             situation="Сотрудник грубо нарушил дресс-код")
+        for forbidden in ("сырые слова", "определить по обстоятельствам",
+                          pdoc.TRIGGER_ANSWER_END, pdoc.TRIGGER_DOC_START):
+            self.assertNotIn(forbidden, text)
+        self.assertIn("Обстоятельства: Сотрудник грубо нарушил дресс-код", text)
+
+    def test_own_request_is_recognised_by_text(self):
+        text = self._request(doc_number="LSCSD-IAD-1",
+                             situation="Сотрудник грубо нарушил дресс-код")
+        self.assertTrue(pdoc.is_own_request(text, text))
+        self.assertTrue(pdoc.is_own_request("префикс\n" + text + "\nхвост"))
+        self.assertFalse(pdoc.is_own_request(
+            "На изображении представлен документ.\n\n===ПОСТАНОВЛЕНИЕ===\n"
+            "Номер: LSCSD-IAD-1\n===КОНЕЦ ПОСТАНОВЛЕНИЯ===", text))
+
+    def test_plain_mention_is_not_a_trigger(self):
+        for text in ("Постановление вынес: Marcus Nomad",
+                     "Настоящее постановление вступает в силу.",
+                     "На изображении представлен официальный бланк — Постановление "
+                     "о выдаче дисциплинарного взыскания."):
+            self.assertFalse(pdoc.has_document_trigger(text), text)
+
+    def test_real_marker_is_a_trigger(self):
+        for text in ("===ПОСТАНОВЛЕНИЕ===\nНомер: 1",
+                     "=== ПОСТАНОВЛЕНИЕ ===",
+                     "**===ПОСТАНОВЛЕНИЕ===**",
+                     "ПОСТАНОВЛЕНИЕ\nНомер: 1",
+                     "ПОСТАНОВЛЕНИЕ: LSCSD-IAD-1",
+                     "Концовка: ===КОНЕЦ ПОСТАНОВЛЕНИЯ==="):
+            self.assertTrue(pdoc.has_document_trigger(text), text)
+
+    def test_client_skips_its_own_request_before_parsing(self):
+        src = Path("main.py").read_text(encoding="utf-8")
+        block = src[src.index("def _apply_document_answer"):]
+        block = block[:block.index("def _restart_after_document")]
+        self.assertIn("is_own_request", block)
+        # ответ не печатается, пока не пришёл целиком
+        self.assertIn("answer_still_streaming", block)
+        self.assertLess(block.index("is_own_request"), block.index("render_document"))
+        self.assertLess(block.index("answer_still_streaming"), block.index("save_pages"))
+
+    def test_request_text_is_remembered_on_submit(self):
+        src = Path("main.py").read_text(encoding="utf-8")
+        self.assertIn("_doc_request_text", src)
 
 
 class HistoryTests(unittest.TestCase):
