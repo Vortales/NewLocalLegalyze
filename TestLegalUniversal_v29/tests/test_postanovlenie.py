@@ -1,0 +1,482 @@
+"""Тесты постановлений v27: разбор ответа ИИ, данные, история и PNG-бланк.
+
+Проверяем ровно то, на чём держится новая функция:
+
+* триггеры (`===ПОСТАНОВЛЕНИЕ===`, `===КОНЕЦ ОТВЕТА===`) распознаются;
+* поля из ответа ИИ попадают в документ, пункты собираются по номерам;
+* без триггера и без полей разбор ничего не «выдумывает»;
+* документ всегда отдаёт осмысленный .txt для чата и подпись «И. Фамилия»;
+* история хранит полный снимок (открыть старое заполнение и поправить);
+* PNG-рендер даёт A4 и умеет разбивать длинный документ на страницы.
+"""
+
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+import postanovlenie_data as pdoc  # noqa: E402
+
+AI_ANSWER = """===ПОСТАНОВЛЕНИЕ===
+Ведомство: LOS SANTOS COUNTY SHERIFF'S DEPARTMENT
+Подразделение: INTERNAL AFFAIRS DIVISION
+Вид документа: Постановление о выдаче дисциплинарного взыскания
+Заголовок: о выдаче дисциплинарного взыскания
+Номер: LSCSD-IAD-141
+Дата: 06.11.2026
+Постановление вынес: Kirill Goldens
+Должность: Major (Майор IAD)
+В отношении: Qorick Mythic
+Удостоверение: 166759
+Звание сотрудника: Cadet
+Отдел сотрудника: Patrol
+Нарушенный акт: Внутреннего устава Los Santos County Sheriff Department
+Пункт нарушения: пункт 19) части 1 статьи а
+Взыскание: строгий выговор
+Ситуация: Сотрудник оставил пост без разрешения.
+Доказательства: Рапорт supervisor.
+Постановляющая часть:
+1. Назначить сотруднику Qorick Mythic взыскание в виде строгого выговора.
+2. Постановление вступает в силу с момента подписания.
+3. Контроль оставляю за собой.
+===КОНЕЦ ПОСТАНОВЛЕНИЯ===
+===КОНЕЦ ОТВЕТА===
+"""
+
+
+class TriggerTests(unittest.TestCase):
+    def test_trigger_is_detected_in_any_spacing(self):
+        for text in ("===ПОСТАНОВЛЕНИЕ===", "=== ПОСТАНОВЛЕНИЕ ===",
+                     "постановление:", "Конец: ===КОНЕЦ ПОСТАНОВЛЕНИЯ==="):
+            self.assertTrue(pdoc.has_document_trigger(text), text)
+
+    def test_answer_end_is_detected_like_v26_client(self):
+        self.assertTrue(pdoc.has_answer_end("текст\n===КОНЕЦ ОТВЕТА==="))
+        self.assertTrue(pdoc.has_answer_end("текст\n=== КОНЕЦ ОТВЕТА ==="))
+        self.assertFalse(pdoc.has_answer_end("текст без маркера"))
+
+    def test_triggers_are_removed_from_human_readable_text(self):
+        clean = pdoc.strip_triggers("Привет\n===ПОСТАНОВЛЕНИЕ===\nТело\n===КОНЕЦ ОТВЕТА===")
+        self.assertNotIn("===", clean)
+        self.assertIn("Тело", clean)
+
+
+class ParseTests(unittest.TestCase):
+    def test_fields_and_points_are_parsed(self):
+        doc = pdoc.parse_ai_answer(AI_ANSWER)
+        self.assertIsNotNone(doc)
+        self.assertEqual(doc.get("doc_number"), "LSCSD-IAD-141")
+        self.assertEqual(doc.get("doc_date"), "06.11.2026")
+        self.assertEqual(doc.get("subject_name"), "Qorick Mythic")
+        self.assertEqual(doc.get("subject_id"), "166759")
+        self.assertEqual(doc.get("penalty"), "строгий выговор")
+        self.assertEqual(len(doc.points), 3)
+        self.assertIn("строгого выговора", doc.points[0])
+        self.assertEqual(doc.source, "ai")
+
+    def test_base_document_fills_the_gaps(self):
+        base = pdoc.Postanovlenie(doc_number="LSCSD-IAD-150", author_name="Kirill Goldens")
+        doc = pdoc.parse_ai_answer("===ПОСТАНОВЛЕНИЕ===\nВ отношении: Qorick Mythic\n",
+                                   base=base)
+        self.assertEqual(doc.get("doc_number"), "LSCSD-IAD-150")
+        self.assertEqual(doc.get("subject_name"), "Qorick Mythic")
+
+    def test_plain_chat_without_trigger_gives_nothing(self):
+        self.assertIsNone(pdoc.parse_ai_answer("Обычный правовой ответ без документа."))
+        self.assertIsNone(pdoc.parse_ai_answer(""))
+
+    def test_answer_without_points_gets_points_from_the_charter(self):
+        doc = pdoc.parse_ai_answer("===ПОСТАНОВЛЕНИЕ===\nВ отношении: Qorick Mythic\n"
+                                   "Взыскание: строгий выговор\n")
+        points = doc.decision_points()
+        self.assertEqual(len(points), 3)
+        self.assertIn("строгого выговора", points[0])
+
+    def test_free_text_answer_keeps_the_story(self):
+        doc = pdoc.parse_ai_answer(
+            "===ПОСТАНОВЛЕНИЕ===\nНомер: LSCSD-IAD-9\n"
+            "Сотрудник отсутствовал на построении.\n")
+        self.assertIn("отсутствовал", doc.get("situation"))
+
+
+class DocumentTests(unittest.TestCase):
+    def setUp(self):
+        self.doc = pdoc.Postanovlenie(
+            doc_number="LSCSD-IAD-141",
+            doc_date="06.11.2026",
+            author_name="Kirill Goldens",
+            author_rank="Major (Майор IAD)",
+            subject_name="Qorick Mythic",
+            subject_id="166759",
+            violation_act="Внутреннего устава Los Santos County Sheriff Department",
+            violation_clause="пункт 19) части 1 статьи а",
+            penalty="строгий выговор",
+        )
+
+    def test_signature_is_initial_plus_surname(self):
+        self.assertEqual(self.doc.signature(), "K. Goldens")
+        self.assertEqual(pdoc.initials_signature("kirill goldens"), "K. Goldens")
+        self.assertEqual(pdoc.initials_signature("Qorick"), "Qorick")
+        self.assertEqual(pdoc.initials_signature(""), "")
+
+    def test_genitive_forms_are_used_in_the_resolution(self):
+        self.assertEqual(pdoc.penalty_instrumental("строгий выговор"), "строгого выговора")
+        self.assertEqual(pdoc.penalty_instrumental("увольнение"), "увольнения")
+        self.assertEqual(pdoc.clause_genitive("пункт 19) части 1 статьи а"),
+                         "пункта 19) части 1 статьи а")
+        self.assertIn("в виде строгого выговора", self.doc.decision_points()[0])
+
+    def test_missing_fields_are_named_for_the_user(self):
+        empty = pdoc.Postanovlenie()
+        missing = empty.missing_fields()
+        self.assertIn("Номер документа", missing)
+        self.assertEqual(self.doc.missing_fields(), [])
+
+    def test_chat_txt_is_structured_and_named(self):
+        text = self.doc.to_chat_txt()
+        self.assertTrue(text.startswith(pdoc.DOC_MARKER_NAME))
+        self.assertIn("Номер: LSCSD-IAD-141", text)
+        self.assertIn("постановляющая часть", text.lower())
+        self.assertIn(pdoc.TRIGGER_ANSWER_END, text)
+        self.assertNotIn("===ПОСТАНОВЛЕНИЕ===", text)  # маркер выдаёт только ИИ
+        self.assertEqual(self.doc.chat_txt_name(), "ПОСТАНОВЛЕНИЕ LSCSD-IAD-141.txt")
+
+    def test_chat_txt_has_no_duplicated_fields(self):
+        text = self.doc.to_chat_txt()
+        self.assertEqual(text.count("Вид документа:"), 1)
+
+    def test_auto_number_follows_history(self):
+        self.assertEqual(self.doc.auto_number([]), "LSCSD-IAD-1")
+        self.assertEqual(
+            self.doc.auto_number(["LSCSD-IAD-7", "LSCSD-IAD-140"], prefix="LSCSD-IAD"),
+            "LSCSD-IAD-141")
+
+    def test_round_trip_through_dict(self):
+        clone = pdoc.Postanovlenie.from_dict(self.doc.to_dict())
+        for key, _form, _label in pdoc.DOC_FIELDS:
+            self.assertEqual(clone.get(key), self.doc.get(key), key)
+
+
+class RemarksV28Tests(unittest.TestCase):
+    """Замечания к v27 — каждая строка проверяется отдельным тестом."""
+
+    #: Ответ ровно из замечаний (включая мусор интерфейса и «не указано»).
+    ANSWER = """===ПОСТАНОВЛЕНИЕ===
+Вид документа: Постановление о снятии дисциплинарного взыскания
+Заголовок: Снятие дисциплинарного взыскания
+Номер: LSCSD-IAD-1
+Дата: 06.11.2026
+Постановление вынес: Marcus Nomad
+Должность: Куратор отдела IAD (Assistent sheriff), Сенатор
+В отношении: Aliya Nomad
+Удостоверение: 131485
+Звание сотрудника: не указано
+Отдел сотрудника: не указан
+Нарушенный акт: Согласно обстоятельств.
+Пункт нарушения: Согласно обстоятельств.
+Взыскание: предупреждение
+Ситуация: Сотрудник грубо нарушил дресс код и суббординацию
+Доказательства: не указаны
+Постановляющая часть:
+1. Назначить сотруднику Aliya Nomad взыскание в виде предупреждения.
+2. Постановление вступает в силу с момента подписания.
+3. Контроль оставляю за собой.
+Дополнительно: Перейти к основному контенту
+Справка по использованию специальных возможностей
+Memphis.pdf
+PDF
+Шаблон.txt
+File
+Перейти к предыдущему запросу
+Режим ИИ обрабатывает ваш запрос…
+All items removed from input context.
+===КОНЕЦ ПОСТАНОВЛЕНИЯ===
+===КОНЕЦ ОТВЕТА===
+"""
+
+    def test_ui_noise_never_reaches_the_document(self):
+        doc = pdoc.parse_ai_answer(self.ANSWER)
+        joined = " ".join([
+            doc.get("situation"), doc.get("extra"), doc.get("evidence"),
+            " ".join(doc.points),
+        ]).lower()
+        for noise in ("перейти к основному контенту", "memphis.pdf", "шаблон.txt",
+                      "all items removed", "режим ии обрабатывает", "pdf"):
+            self.assertNotIn(noise, joined, noise)
+
+    def test_placeholders_become_empty_not_text(self):
+        doc = pdoc.parse_ai_answer(self.ANSWER)
+        self.assertEqual(doc.get("subject_rank"), "")
+        self.assertEqual(doc.get("subject_department"), "")
+        self.assertEqual(doc.get("evidence"), "")
+
+    def test_removal_document_does_not_assign_a_penalty(self):
+        doc = pdoc.parse_ai_answer(self.ANSWER)
+        self.assertEqual(doc.kind(), "removal")
+        first = doc.decision_points()[0].lower()
+        self.assertIn("снять", first)
+        self.assertNotIn("назначить", first)
+
+    def test_penalty_document_keeps_assignment(self):
+        doc = pdoc.Postanovlenie(doc_type=pdoc.DOC_TYPES[0], subject_name="A B",
+                                 penalty="строгий выговор")
+        self.assertIn("назначить", doc.decision_points()[0].lower())
+
+    def test_optional_violation_fields_are_not_required(self):
+        doc = pdoc.Postanovlenie(doc_number="LSCSD-IAD-1", doc_date="06.11.2026",
+                                 author_name="Marcus Nomad", author_rank="Куратор IAD",
+                                 subject_name="Aliya Nomad", subject_id="131485",
+                                 situation="Нарушение дресс-кода.")
+        self.assertEqual(doc.missing_fields(), [])
+
+    def test_chat_txt_asks_the_ai_to_fill_what_the_user_skipped(self):
+        doc = pdoc.Postanovlenie(doc_number="LSCSD-IAD-3", doc_date="07.11.2026",
+                                 subject_name="Aliya Nomad", subject_id="131485",
+                                 situation="Нарушение дресс-кода.")
+        text = doc.to_chat_txt()
+        self.assertIn("Взыскание: определить по обстоятельствам", text)
+        self.assertIn("Пункт нарушения: определить по обстоятельствам", text)
+        # без взыскания шаблонные пункты в заявку не попадают
+        self.assertNotIn("Назначить сотруднику", text)
+
+    def test_chat_txt_has_no_ui_noise_even_if_it_was_in_the_answer(self):
+        doc = pdoc.parse_ai_answer(self.ANSWER)
+        text = doc.to_chat_txt()
+        for noise in ("Memphis.pdf", "All items removed", "Режим ИИ"):
+            self.assertNotIn(noise, text)
+
+    def test_handwriting_font_is_used_for_the_signature(self):
+        import doc_render
+        assets = doc_render.DocAssets(ROOT)
+        self.assertTrue(assets.fonts.script_is_handwritten)
+        self.assertIn("Caveat", Path(assets.fonts.script_path).name)
+        # основной текст — PT Serif, а не «системный» DejaVu
+        self.assertIn("PTSerif", Path(assets.fonts.body_path).name)
+        self.assertIn("PTSerif", Path(assets.fonts.bold_path).name)
+
+
+class RemarksV29Tests(unittest.TestCase):
+    """Замечания к v28: ресурсы бланка, «взыскание в виде взыскания», должность, ФИО."""
+
+    # ── ресурсы: герб, печать и рукописный шрифт находятся при любом запуске ──
+    def test_assets_are_found_even_if_app_dir_has_no_data(self):
+        """APP_DIR = %APPDATA%\Legalyze, а ресурсы лежат рядом с программой."""
+        import tempfile
+        import doc_render
+        empty = Path(tempfile.mkdtemp())          # «пустой» APP_DIR
+        assets = doc_render.DocAssets(empty)
+        described = assets.describe()
+        self.assertTrue(described["gerb"].endswith("gerb_lscsd.png"), described)
+        self.assertTrue(described["pechat"].endswith("stamp_lscsd.png"), described)
+        self.assertTrue(Path(described["shrift_podpisi"]).is_file(), described)
+        self.assertTrue(assets.fonts.script_is_handwritten, described["shrift_podpisi"])
+        self.assertEqual(Path(assets.fonts.body_path).name, "PTSerif-Regular.ttf")
+
+    def test_assets_missing_files_are_reported_not_crashing(self):
+        import tempfile
+        import doc_render
+        with tempfile.TemporaryDirectory() as tmp:
+            assets = doc_render.DocAssets(Path(tmp), coat=Path(tmp) / "нет.png")
+            described = assets.describe()
+            self.assertEqual(described["gerb"], "")
+            pages = doc_render.render_document(
+                pdoc.Postanovlenie(doc_number="X-1", subject_name="A B"), assets)
+            self.assertEqual(len(pages), 1)
+
+    # ── взыскание ──
+    def test_penalty_is_never_disciplinary_action_in_itself(self):
+        doc = pdoc.Postanovlenie(doc_number="LSCSD-IAD-3", subject_name="Aliya Nomad",
+                                 penalty="дисциплинарное взыскание")
+        first = doc.decision_points()[0].lower()
+        self.assertNotIn("в виде дисциплинарного взыскания", first)
+        self.assertIn("назначить", first)
+
+    def test_penalty_is_normalized_to_the_list_of_the_ustav(self):
+        cases = {
+            "строгого выговора": "строгий выговор",
+            "устный": "устный выговор",
+            "выговор": "строгий выговор",
+            "увольнение": "увольнение",
+            "переаттестации": "переаттестация",
+            "предупреждение": "предупреждение",
+            "понижение": "понижение",
+            "какой-то штраф": "",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(pdoc.normalize_penalty(raw), expected, raw)
+
+    def test_specific_penalty_appears_in_the_resolution(self):
+        doc = pdoc.Postanovlenie(subject_name="Aliya Nomad", subject_id="131485",
+                                 penalty="строгий выговор")
+        self.assertIn("в виде строгого выговора", doc.decision_points()[0])
+
+    # ── должность ──
+    def test_only_faction_position_is_used(self):
+        for raw, expected in (
+            ("Куратор отдела IAD (Assistent sheriff), Сенатор", "Куратор отдела IAD (Assistent sheriff)"),
+            ("Куратор отдела IAD (Assistent sheriff); Губернатор", "Куратор отдела IAD (Assistent sheriff)"),
+            ("Офицер IAD", "Офицер IAD"),
+            ("", ""),
+        ):
+            self.assertEqual(pdoc.clean_position(raw), expected, raw)
+
+    def test_position_is_cleaned_in_preamble_and_signature(self):
+        doc = pdoc.Postanovlenie(author_name="Marcus Nomad",
+                                 author_rank="Куратор отдела IAD (Assistent sheriff), Сенатор")
+        self.assertNotIn("Сенатор", doc.preamble())
+        self.assertEqual(doc.get("author_rank"), "Куратор отдела IAD (Assistent sheriff)")
+
+    # ── ФИО и удостоверение ──
+    def test_name_and_id_are_separated_when_the_ai_swapped_them(self):
+        doc = pdoc.Postanovlenie(subject_name="Aliya", subject_id="Nomad")
+        self.assertEqual(doc.subject_name, "Aliya Nomad")
+        self.assertEqual(doc.subject_id, "")
+        first = doc.decision_points()[0]
+        self.assertNotIn("#Nomad", first)
+        self.assertIn("Aliya Nomad", first)
+
+    def test_id_is_digits_only(self):
+        doc = pdoc.Postanovlenie(subject_name="Aliya Nomad", subject_id="№131485")
+        self.assertEqual(doc.subject_id, "131485")
+        doc.set("subject_id", "уд. 85028")
+        self.assertEqual(doc.subject_id, "85028")
+
+    def test_name_with_embedded_id_is_cleaned(self):
+        doc = pdoc.Postanovlenie(subject_name="Marcus Nomad 85028", subject_id="")
+        self.assertEqual(doc.subject_name, "Marcus Nomad")
+        self.assertEqual(pdoc.split_subject("Aliya #131485", "131485")[0], "Aliya")
+
+    # ── заявка просит ИИ переработать обстоятельства ──
+    def test_chat_txt_marks_the_situation_as_raw_user_words(self):
+        doc = pdoc.Postanovlenie(doc_number="LSCSD-IAD-4", subject_name="Aliya Nomad",
+                                 situation="задержал просто так и ходила с ним")
+        text = doc.to_chat_txt()
+        self.assertIn("сырые слова пользователя", text)
+        self.assertIn("переработай", text)
+
+
+class HistoryTests(unittest.TestCase):
+    def test_history_keeps_full_snapshot_for_editing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            history = pdoc.DocumentHistory(Path(tmp))
+            doc = pdoc.Postanovlenie(doc_number="LSCSD-IAD-1", subject_name="Qorick Mythic",
+                                     situation="Первая редакция")
+            history.save(doc)
+            doc.situation = "Вторая редакция"
+            history.save(doc)
+
+            self.assertEqual(len(history.items()), 2)
+            self.assertEqual(len(history.labels()), 2)
+            self.assertEqual(history.used_numbers(), ["LSCSD-IAD-1", "LSCSD-IAD-1"])
+
+            loaded = history.load_index(0)
+            self.assertIsNotNone(loaded)
+            self.assertIn(loaded.get("situation"),
+                          {"Первая редакция", "Вторая редакция"})
+            self.assertTrue(history.labels()[0].endswith("LSCSD-IAD-1 · Qorick Mythic"))
+
+    def test_broken_history_file_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            (folder / "20260101-000000.json").write_text("{битый", encoding="utf-8")
+            history = pdoc.DocumentHistory(folder)
+            self.assertEqual(history.items(), [])
+
+
+class RegulationTests(unittest.TestCase):
+    def test_charter_penalties_match_the_list_of_the_ustav(self):
+        reg = pdoc.Regulation(pdoc.default_regulation_path(ROOT / "data"))
+        self.assertTrue(reg.title)
+        penalties = [p.lower() for p in reg.penalties()]
+        for expected in ("устный выговор", "строгий выговор", "увольнение"):
+            self.assertIn(expected, penalties)
+
+    def test_unknown_clause_is_not_invented(self):
+        reg = pdoc.Regulation(pdoc.default_regulation_path(ROOT / "data"))
+        self.assertEqual(reg.clause_text("пункт 9999) части 1 статьи zz"), "")
+
+    def test_clause_is_found_in_the_real_ustav_format(self):
+        reg = pdoc.Regulation(pdoc.default_regulation_path(ROOT / "data"))
+        found = reg.clause_text("пункт 3.1 устава")
+        self.assertTrue(found.startswith("3.1"), found[:40])
+        self.assertIn("дисциплинарное взыскание", found.lower())
+        self.assertTrue(reg.clause_text("4.1").startswith("4.1"))
+
+
+class RenderTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        try:
+            import doc_render
+        except Exception as exc:                       # pragma: no cover
+            raise unittest.SkipTest("Pillow недоступен: %s" % exc)
+        cls.render = doc_render
+
+    def _doc(self, points=None):
+        return pdoc.Postanovlenie(
+            doc_number="LSCSD-IAD-141",
+            doc_date="06.11.2026",
+            author_name="Kirill Goldens",
+            author_rank="Major (Майор IAD)",
+            subject_name="Qorick Mythic",
+            subject_id="166759",
+            violation_act="Внутреннего устава Los Santos County Sheriff Department",
+            violation_clause="пункт 19) части 1 статьи а",
+            penalty="строгий выговор",
+            situation="Сотрудник оставил пост без разрешения.",
+            points=list(points or []),
+        )
+
+    def test_single_page_is_a4_at_200_dpi(self):
+        pages = self.render.render_document(self._doc())
+        self.assertEqual(len(pages), 1)
+        self.assertEqual(pages[0].size, (self.render.PAGE_W, self.render.PAGE_H))
+        # 200 dpi * 8.27" ≈ 1654 px, 11.69" ≈ 2339 px
+        self.assertEqual(self.render.PAGE_W, 1654)
+
+    def test_long_document_is_split_into_pages(self):
+        points = [f"Пункт {i}. " + "Обстоятельства и правовые основания. " * 8
+                  for i in range(1, 12)]
+        pages = self.render.render_document(self._doc(points))
+        self.assertGreaterEqual(len(pages), 2)
+        for page in pages:
+            self.assertEqual(page.size, (self.render.PAGE_W, self.render.PAGE_H))
+
+    def test_png_files_are_written_with_readable_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            written = self.render.render_to_png(self._doc(), Path(tmp), "LSCSD-IAD-141")
+            self.assertEqual(len(written), 1)
+            self.assertEqual(written[0].name, "LSCSD-IAD-141.png")
+            self.assertGreater(written[0].stat().st_size, 5000)
+
+            long_points = [f"Пункт {i}. " + "Текст. " * 120 for i in range(1, 10)]
+            multi = self.render.render_to_png(self._doc(long_points), Path(tmp), "multi")
+            self.assertGreaterEqual(len(multi), 2)
+            self.assertTrue(all("стр." in path.name for path in multi))
+
+    def test_coat_of_arms_is_rendered_on_the_page(self):
+        """Замечание v27: на готовом PNG не было герба — проверяем пиксели."""
+        assets = self.render.DocAssets(ROOT)
+        page = self.render.render_document(self._doc(), assets)[0].convert("RGB")
+        # Полоса, где стоит герб (по центру сверху) должна содержать цветные
+        # пиксели эмблемы, а не быть полностью белой.
+        crop = page.crop((self.render.PAGE_W // 2 - 130, 120,
+                          self.render.PAGE_W // 2 + 130, 380))
+        colors = crop.getcolors(maxcolors=1_000_000) or []
+        non_white = sum(count for count, color in colors
+                        if min(color) < 200)
+        self.assertGreater(non_white, 2000)
+
+    def test_assets_fall_back_gracefully_without_images(self):
+        assets = self.render.DocAssets(ROOT)
+        described = assets.describe()
+        self.assertTrue(described["gerb"].endswith("gerb_lscsd.png"))
+        self.assertTrue(described["pechat"].endswith("stamp_lscsd.png"))
+        self.assertTrue(described["shrift_podpisi"])
+
+
+if __name__ == "__main__":
+    unittest.main()
