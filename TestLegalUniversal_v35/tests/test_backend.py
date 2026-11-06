@@ -4152,10 +4152,35 @@ class TemplateProfilesTests(unittest.TestCase):
         self.assertNotIn('f"Шаблон: {name}"', main_src)
 
     def test_top_buttons_are_compact(self):
+        """v35.1: верхние кнопки уменьшены ещё на шаг."""
         main_src = Path("main.py").read_text(encoding="utf-8")
         for button in ("btn_template", "btn_documents", "btn_prompt"):
-            self.assertIn(f"self.{button}.setFixedHeight(24)", main_src)
-        self.assertIn("font-size: 10px", main_src)
+            self.assertIn(f"self.{button}.setFixedHeight(20)", main_src)
+            self.assertNotIn(f"self.{button}.setFixedHeight(24)", main_src)
+        self.assertIn("font-size: 9px", main_src)
+        self.assertIn("padding: 2px 5px;", main_src)
+
+    def test_profile_buttons_are_not_clipped(self):
+        """Кнопки «Добавить/Переименовать/Удалить» не режутся по высоте.
+
+        Глобальный QSS задаёт padding 9px 16px — при setFixedHeight(26) текст
+        не влезал и кнопка обрезалась. Теперь высота 30 и padding 0 сверху.
+        """
+        main_src = Path("main.py").read_text(encoding="utf-8")
+        self.assertIn("_profile_button", main_src)
+        self.assertIn("button.setMinimumHeight(30)", main_src)
+        self.assertIn('"QPushButton { font-size: 11px; padding: 0px 8px; }"', main_src)
+        for name in ("btn_add_profile", "btn_rename_profile", "btn_delete_profile"):
+            self.assertIn(name, main_src)
+        self.assertNotIn("self.btn_add_profile.setFixedHeight(26)", main_src)
+        self.assertNotIn("self.btn_rename_profile.setFixedHeight(26)", main_src)
+        self.assertNotIn("self.btn_delete_profile.setFixedHeight(26)", main_src)
+
+    def test_profile_actions_are_on_their_own_row(self):
+        """Список персонажей и кнопки — в две строки, чтобы не сжиматься."""
+        main_src = Path("main.py").read_text(encoding="utf-8")
+        self.assertIn("profile_actions = QHBoxLayout()", main_src)
+        self.assertIn("root.addLayout(profile_actions)", main_src)
 
     def test_stamp_shifted_right(self):
         src = Path("doc_render.py").read_text(encoding="utf-8")

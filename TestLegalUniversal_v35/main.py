@@ -2215,8 +2215,10 @@ class TemplateWindow(DraggableDialog):
         root.addSpacing(10)
 
         # ── v35: выбор персонажа (шаблонов может быть несколько) ──────────
+        # v35.1: выбор персонажа — отдельная строка, кнопки управления —
+        # следующая. В одну строку они не помещались и обрезались по высоте.
         profile_row = QHBoxLayout()
-        profile_row.setSpacing(6)
+        profile_row.setSpacing(8)
         profile_caption = QLabel("Персонаж")
         profile_caption.setStyleSheet(f"color: {THEME['muted']}; font-size: 12px;")
         profile_row.addWidget(profile_caption)
@@ -2224,28 +2226,38 @@ class TemplateWindow(DraggableDialog):
         self.profile_combo.setMinimumHeight(30)
         self.profile_combo.currentTextChanged.connect(self._on_profile_changed)
         profile_row.addWidget(self.profile_combo, 1)
-
-        self.btn_add_profile = QPushButton("Добавить")
-        self.btn_add_profile.setToolTip("Новый персонаж со своим набором данных")
-        self.btn_add_profile.setFixedHeight(26)
-
-        self.btn_add_profile.clicked.connect(lambda _c=False: self._add_profile())
-        profile_row.addWidget(self.btn_add_profile)
-
-        self.btn_rename_profile = QPushButton("Переименовать")
-        self.btn_rename_profile.setFixedHeight(26)
-        self.btn_rename_profile.clicked.connect(lambda _c=False: self._rename_profile())
-        profile_row.addWidget(self.btn_rename_profile)
-
-        self.btn_delete_profile = QPushButton("Удалить")
-        self.btn_delete_profile.setFixedHeight(26)
-        self.btn_delete_profile.clicked.connect(lambda _c=False: self._delete_profile())
-        profile_row.addWidget(self.btn_delete_profile)
         root.addLayout(profile_row)
 
-        self.profile_hint = QLabel(
-            "Данные персонажа подставляются в промт и бланки. "
-            "Переключаться можно в любой момент.")
+        profile_actions = QHBoxLayout()
+        profile_actions.setSpacing(6)
+        profile_actions.addSpacing(70)          # выравнивание под списком
+
+        def _profile_button(caption, tip, slot):
+            """Кнопки персонажей: высота с запасом, без обрезки по вертикали."""
+            button = QPushButton(caption)
+            button.setToolTip(tip)
+            button.setMinimumHeight(30)
+            button.setFixedHeight(30)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setStyleSheet(
+                "QPushButton { font-size: 11px; padding: 0px 8px; }")
+            button.clicked.connect(lambda _c=False: slot())
+            return button
+
+        self.btn_add_profile = _profile_button(
+            "Добавить", "Новый персонаж со своим набором данных", self._add_profile)
+        profile_actions.addWidget(self.btn_add_profile, 1)
+
+        self.btn_rename_profile = _profile_button(
+            "Переименовать", "Переименовать текущего персонажа", self._rename_profile)
+        profile_actions.addWidget(self.btn_rename_profile, 1)
+
+        self.btn_delete_profile = _profile_button(
+            "Удалить", "Удалить текущего персонажа", self._delete_profile)
+        profile_actions.addWidget(self.btn_delete_profile, 1)
+        root.addLayout(profile_actions)
+
+        self.profile_hint = QLabel("Переключаться между персонажами можно в любой момент.")
         self.profile_hint.setObjectName("Caption")
         self.profile_hint.setWordWrap(True)
         root.addWidget(self.profile_hint)
@@ -4116,10 +4128,10 @@ class MainWindow(QMainWindow):
                 background: rgba(255, 255, 255, 0.04);
                 color: {THEME['text']};
                 border: 1px solid {THEME['line']};
-                border-radius: 6px;
-                font-size: 10px;
+                border-radius: 5px;
+                font-size: 9px;
                 font-weight: 600;
-                padding: 3px 6px;
+                padding: 2px 5px;
                 min-width: 0px;
             }}
             QPushButton:hover {{
@@ -4172,7 +4184,7 @@ class MainWindow(QMainWindow):
 
         self.btn_template = QPushButton("Шаблон")
         self.btn_template.setToolTip("Данные шаблона")
-        self.btn_template.setFixedHeight(24)
+        self.btn_template.setFixedHeight(20)
         self.btn_template.setStyleSheet(icon_btn)
         self.btn_template.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_template.clicked.connect(lambda _checked=False: self._open_template())
@@ -4183,7 +4195,7 @@ class MainWindow(QMainWindow):
         # сюда же придут Жалобы, Иски и Обращения).
         self.btn_documents = QPushButton("Документ")
         self.btn_documents.setToolTip("Постановления (позже — жалобы, иски, обращения)")
-        self.btn_documents.setFixedHeight(24)
+        self.btn_documents.setFixedHeight(20)
         self.btn_documents.setStyleSheet(icon_btn)
         self.btn_documents.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_documents.clicked.connect(lambda _checked=False: self._open_documents())
@@ -4191,7 +4203,7 @@ class MainWindow(QMainWindow):
 
         self.btn_prompt = QPushButton("Промт")
         self.btn_prompt.setToolTip("Выбор промта")
-        self.btn_prompt.setFixedHeight(24)
+        self.btn_prompt.setFixedHeight(20)
         self.btn_prompt.setStyleSheet(icon_btn)
         self.btn_prompt.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_prompt.clicked.connect(lambda _checked=False: self._choose_prompt())
