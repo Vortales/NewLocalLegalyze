@@ -571,6 +571,51 @@ class Postanovlenie:
         lines.append(TRIGGER_ANSWER_END)
         return "\n".join(lines) + "\n"
 
+    def to_document_txt(self) -> str:
+        """Готовый бланк словами — ровно то, что печатается в PNG.
+
+        Порядок блоков повторяет `doc_render.render_document()`: шапка,
+        заголовок, вводная часть, ПОСТАНОВИЛ, основания. Нужен, чтобы можно
+        было проверить документ до печати: `ИИ-документ.txt` == PNG.
+        """
+        lines = [
+            (self.get("vedomstvo") or "LOS SANTOS COUNTY SHERIFF DEPARTMENT").upper(),
+            (self.get("podrazdelenie") or "").upper(),
+            "",
+            self.document_title(),
+            "",
+        ]
+        if self.get("doc_date"):
+            lines.append(f"Дата: {self.get('doc_date')}")
+        if self.get("doc_number"):
+            lines.append(f"№ {self.get('doc_number')}")
+        lines.append("")
+        lines.append(self.preamble())
+        lines.append("")
+        lines.append("ПОСТАНОВИЛ:")
+        lines.append("")
+        for i, point in enumerate(self.decision_points(), 1):
+            lines.append(f"{i}. {point}")
+        lines.append("")
+        facts = []
+        if self.get("violation_act") or self.get("violation_clause"):
+            clause = normalize_clause(self.get("violation_clause"), self.get("violation_act"))
+            facts.append("Основание: " + " ".join(
+                x for x in (clause, self.get("violation_act")) if x))
+        if self.get("situation"):
+            facts.append("Обстоятельства: " + self.get("situation"))
+        if self.get("evidence"):
+            facts.append("Доказательства: " + self.get("evidence"))
+        if self.get("extra"):
+            facts.append("Дополнительно: " + self.get("extra"))
+        lines.extend(facts)
+        lines.append("")
+        if self.get("author_name"):
+            lines.append(f"Подпись: {self.get('author_name')}")
+            if self.get("author_rank"):
+                lines.append(f"Должность: {self.get('author_rank')}")
+        return "\n".join(lines).strip() + "\n"
+
     def chat_txt_name(self) -> str:
         num = self.get("doc_number") or "б-н"
         return f"{DOC_MARKER_NAME} {num}{DOC_MARKER_SUFFIX}"
@@ -939,7 +984,7 @@ def save_ai_answer(root, doc: Postanovlenie, answer_text: str) -> list:
     * `ИИ-ответ.txt` — ровно тот текст, который пришёл в чат (as is, с
       markdown) — чтобы всегда можно было понять, откуда взялся документ;
     * `ИИ-поля.json` — разобранные поля (что именно клиент принял к сведению);
-    * `ИИ-документ.txt` — та же структура, что уходит в чат-заявку.
+    * `ИИ-документ.txt` — РОВНО тот бланк, который печатается в PNG.
     """
     folder = doc_folder(root, doc.get("doc_number"))
     written = []
@@ -957,9 +1002,10 @@ def save_ai_answer(root, doc: Postanovlenie, answer_text: str) -> list:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     written.append(path)
     path = folder / "ИИ-документ.txt"
-    path.write_text(doc.to_chat_txt(), encoding="utf-8")
+    path.write_text(doc.to_document_txt(), encoding="utf-8")
     written.append(path)
     return written
+
 
 
 # --------------------------------------------------------------------------- #

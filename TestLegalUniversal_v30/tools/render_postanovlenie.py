@@ -54,7 +54,7 @@ def main() -> int:
     parser.add_argument("--number", default="LSCSD-IAD-141", help="номер документа")
     parser.add_argument("--subject", default="Qorick Mythic", help="в отношении кого")
     parser.add_argument("--clause", default="пункт 3.1 устава", help="пункт нарушения")
-    parser.add_argument("--out", default=str(ROOT / "postanovleniya" / "png"), help="куда сохранять")
+    parser.add_argument("--out", default=str(ROOT / "postanovleniya"), help="куда сохранять")
     args = parser.parse_args()
 
     doc = build_demo()

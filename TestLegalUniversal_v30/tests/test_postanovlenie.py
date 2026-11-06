@@ -560,6 +560,71 @@ class RemarksV30_1Tests(unittest.TestCase):
         self.assertIsNone(pdoc.parse_ai_answer(""))
 
 
+class FormDoesNotRenderTests(unittest.TestCase):
+    """v30.2: бланк печатается ТОЛЬКО из ответа ИИ, а не из формы.
+
+    Замечание: на «Сформировать» в PNG попадали данные конструктора, а не
+    ИИ-документ.txt, и файлы ИИ оказывались в другой папке (%APPDATA%).
+    """
+
+    def test_submit_does_not_render_a_png(self):
+        src = Path("postanovlenie_ui.py").read_text(encoding="utf-8")
+        block = src[src.index("def _form(self)"):]
+        block = block[:block.index("def mousePressEvent")]
+        self.assertNotIn("render.save_pages", block,
+                         "«Сформировать» не должен печатать PNG из формы")
+        self.assertNotIn("render.render_document", block,
+                         "«Сформировать» не должен строить бланк из формы")
+
+    def test_answer_is_rendered_from_the_ai_document_only(self):
+        src = Path("main.py").read_text(encoding="utf-8")
+        block = src[src.index("def _apply_document_answer"):]
+        block = block[:block.index("def _restart_after_document")]
+        self.assertIn("prender.render_document(doc,", block)
+        self.assertIn("parse_ai_answer", block)
+
+    def test_default_folder_is_next_to_the_program(self):
+        import config
+        folder = config.postanovlenie_dir({})
+        self.assertEqual(folder.name, "postanovleniya")
+        self.assertEqual(folder.parent, Path(config.__file__).resolve().parent)
+        self.assertNotIn("AppData", str(folder))
+        self.assertNotIn("Desktop", str(folder))
+        # выбранная пользователем папка имеет приоритет
+        self.assertEqual(config.postanovlenie_dir({"postanovlenie_dir": "/tmp/выбрано"}),
+                         Path("/tmp/выбрано"))
+
+    def test_document_txt_matches_what_is_printed(self):
+        """В ИИ-документ.txt тот же текст, что и в PNG (порядок блоков)."""
+        doc = pdoc.Postanovlenie(
+            doc_number="LSCSD-IAD-1", doc_date="06.11.2026",
+            author_name="Marcus Nomad", author_rank="Куратор отдела IAD (Assistent sheriff)",
+            subject_name="Aliya Nomad", subject_id="131485",
+            violation_clause="пункта 8.5 и пункта 8.1",
+            violation_act="Устав Los Santos County Sheriff Department",
+            penalty="строгий выговор",
+            situation="При проведении проверки установлено, что сотрудник допустил нарушение.",
+            evidence="не представлены",
+        )
+        text = doc.to_document_txt()
+        for expected in ("LOS SANTOS COUNTY SHERIFF'S DEPARTMENT", "INTERNAL AFFAIRS DIVISION",
+                         "Постановление о выдаче дисциплинарного взыскания",
+                         "Дата: 06.11.2026", "№ LSCSD-IAD-1", "ПОСТАНОВИЛ:",
+                         "Основание:", "Обстоятельства:", "Доказательства:",
+                         "Подпись: Marcus Nomad"):
+            self.assertIn(expected, text)
+        self.assertLess(text.index("ПОСТАНОВИЛ:"), text.index("Основание:"))
+
+    def test_ai_answer_files_live_in_the_chosen_folder(self):
+        """История, ИИ-документ.txt и PNG — в ВЫБРАННОЙ папке, а не в %APPDATA%."""
+        src = Path("postanovlenie_ui.py").read_text(encoding="utf-8")
+        self.assertIn("def _documents_root", src)
+        self.assertIn("return postanovlenie_dir(self.cfg)", src)
+        main_src = Path("main.py").read_text(encoding="utf-8")
+        self.assertIn("return Path(postanovlenie_dir(self.cfg))", main_src)
+        self.assertNotIn("Path(postanovlenie_dir(self.cfg)).parent", main_src)
+
+
 class HistoryTests(unittest.TestCase):
     def test_history_keeps_full_snapshot_for_editing(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -126,16 +126,25 @@ DEFAULT_CONFIG = {
 
 
 def postanovlenie_dir(cfg: dict | None = None) -> Path:
-    """Папка готовых постановлений: выбранная пользователем или по умолчанию."""
+    """Корневая папка постановлений: выбранная пользователем или папка программы.
+
+    v30.2: по умолчанию — `postanovleniya` РЯДОМ С ПРОГРАММОЙ, а не в
+    %%APPDATA%%/Legalyze и не на рабочем столе. Внутри корня каждое
+    постановление лежит в своей подпапке `<номер>/`.
+    """
     cfg = cfg or {}
     custom = str(cfg.get("postanovlenie_dir", "") or "").strip()
-    folder = Path(custom) if custom else (APP_DIR / "postanovleniya" / "png")
+    default = _script_dir() / "postanovleniya"
+    folder = Path(custom) if custom else default
     try:
         folder.mkdir(parents=True, exist_ok=True)
     except Exception:
         diag.exception("config.py:postanovlenie_dir")
-        folder = APP_DIR / "postanovleniya" / "png"
-        folder.mkdir(parents=True, exist_ok=True)
+        folder = default
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            diag.exception("config.py:postanovlenie_dir.default")
     return folder
 
 
