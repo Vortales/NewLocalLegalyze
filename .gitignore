@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+
+# сборка
+build/
+Legalyze.dist/
+*.dist/
