@@ -5386,7 +5386,31 @@ class MainWindow(QMainWindow):
         return self._doc_assets_cache
 
     def _program_dir(self) -> Path:
-        """Папка программы: там лежат data/ (герб, печать, шрифты, устав)."""
+        """Папка программы: там лежат data/ (герб, печать, шрифты, устав).
+
+        v35: в сборке Nuitka `__file__` может указывать внутрь
+        `Legalyze.dist` (или во временную папку), а ресурсы едут рядом с exe.
+        Поэтому перебираем: папка exe → BUNDLE_DIR → папка модуля. Иначе в
+        собранной программе не находились герб, печать и устав.
+        """
+        candidates = []
+        try:
+            if getattr(sys, "frozen", False) or "__compiled__" in globals():
+                candidates.append(Path(sys.executable).resolve().parent)
+        except Exception:
+            diag.exception("main.program_dir_exe")
+        try:
+            from config import RESOURCE_DIR
+            candidates.append(Path(RESOURCE_DIR))
+        except Exception:
+            diag.exception("main.program_dir_bundle")
+        candidates.append(Path(__file__).resolve().parent)
+        for folder in candidates:
+            try:
+                if (folder / "data").is_dir():
+                    return folder
+            except Exception:
+                continue
         return Path(__file__).resolve().parent
 
     def _document_regulation(self):

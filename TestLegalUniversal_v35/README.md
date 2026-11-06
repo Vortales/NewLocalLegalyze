@@ -8,6 +8,36 @@
 >
 > **Собирать exe нужно из этой папки**: `СБОРКА_NUITKA.txt` (режим standalone).
 
+## Сборка v35 (Nuitka) — исправленный синтаксис
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build_nuitka_standalone.ps1
+```
+
+Скрипт сам подбирает компилятор C (MSVC при наличии Visual Studio, иначе
+`--mingw64`), собирает и проверяет, что в `build\Legalyze.dist` лежат герб,
+печать, шрифты и устав. Флаги: `-Msvc`, `-MinGW`, `-Zig`, `-NoLto`, `-OneFile`.
+Есть и обёртка `build_nuitka_standalone.bat`.
+
+Что было не так с прошлой командой (ошибка `cannot locate suitable C compiler`
+— это отсутствие Visual Studio, код был ни при чём) и что исправлено в ключах:
+
+* `--include-data-dir=data=data` вместо отдельных `--include-data-files`:
+  раньше в сборку ехали только `DejaVuSans.ttf` и лицензия — **без герба,
+  печати, шрифтов подписи и `data/reestr/*.json` (устав)**. Теперь вся папка;
+* `--include-package=urllib3` и `=PIL` — используются неявно;
+* `--nofollow-import-to=websocket.policyserver` / `websocket.server` — именно
+  они давали предупреждения `Cannot follow import ... SyntaxError`;
+* `--nofollow-import-to=PIL.ImageTk`, `tkinter` — убирают предупреждение anti-bloat;
+* `--include-distribution-metadata=pillow` — добавлено;
+* собственные модули (`postanovlenie_data`, `postanovlenie_ui`, `doc_render`,
+  `native_browser`, `win32_*`) включены явно;
+* версия продукта 1.1.0.0;
+* `_program_dir()` в exe ищет `data/` рядом с exe и через `RESOURCE_DIR`,
+  а не только по `__file__`.
+
+Подробности и разбор каждого ключа — в `СБОРКА_NUITKA.txt`.
+
 ## v35 — несколько персонажей в «Шаблоне», компактные кнопки, печать правее
 
 * **Несколько персонажей.** Раньше шаблон был один на всех. Теперь в окне

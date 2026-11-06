@@ -1042,9 +1042,12 @@ class SourceTests(unittest.TestCase):
                       '--include-package=fpdf', '--assume-yes-for-downloads',
                       '--output-filename=Legalyze.exe', 'main.py'):
             self.assertIn(token, txt)
-        self.assertIn('data/DejaVuSans.ttf=data/DejaVuSans.ttf', txt)
-        self.assertIn('data/FONT-LICENSE.txt=data/FONT-LICENSE.txt', txt)
-        self.assertIn('--file-version=1.0.5.0', txt)
+        # v35: вся папка data целиком (шрифты, герб, печать, устав в reestr/)
+        self.assertIn('--include-data-dir=data=data', txt)
+        self.assertIn('--include-package=urllib3', txt)
+        self.assertIn('--nofollow-import-to=websocket.policyserver', txt)
+        self.assertIn('--file-version=1.1.0.0', txt)
+        self.assertIn('build_nuitka_standalone.ps1', txt)
 
     # ---------------------------------------------------------------- v13 --
     def test_no_unsupported_media_flag_is_emitted(self):
@@ -4185,3 +4188,48 @@ class TemplateProfilesTests(unittest.TestCase):
     def test_stamp_shifted_right(self):
         src = Path("doc_render.py").read_text(encoding="utf-8")
         self.assertIn("stamp_center_x = MARGIN_X + stamp_size // 2 + 70", src)
+class NuitkaBuildTests(unittest.TestCase):
+    """v35: сборка Nuitka должна везти ВСЕ ресурсы и выбирать компилятор сама."""
+
+    @staticmethod
+    def _ps1():
+        return Path("build_nuitka_standalone.ps1").read_text(encoding="utf-8")
+
+    def test_data_folder_is_bundled_whole(self):
+        """Герб, печать, шрифты и устав едут одной папкой data."""
+        ps1 = self._ps1()
+        self.assertIn('"--include-data-dir=data=data"', ps1)
+        self.assertNotIn('--include-data-files=data/DejaVuSans.ttf', ps1)
+        for asset in ("gerb_lscsd.png", "stamp_lscsd.png", "DejaVuSans.ttf",
+                      "PTSerif-Regular.ttf", "Устав Los Santos County Sheriff Department.json"):
+            self.assertTrue(Path("data") / asset if not asset.endswith(".json")
+                            else Path("data/reestr") / asset, asset)
+
+    def test_compiler_is_chosen_automatically(self):
+        ps1 = self._ps1()
+        self.assertIn("vswhere.exe", ps1)
+        self.assertIn("Microsoft.VisualStudio.Component.VC.Tools.x86.x64", ps1)
+        self.assertIn("--mingw64", ps1)
+        self.assertIn("--zig", ps1)
+        self.assertIn("--msvc=latest", ps1)
+
+    def test_websocket_server_modules_are_skipped(self):
+        ps1 = self._ps1()
+        self.assertIn("--nofollow-import-to=websocket.policyserver", ps1)
+        self.assertIn("--nofollow-import-to=websocket.server", ps1)
+
+    def test_build_results_are_verified(self):
+        ps1 = self._ps1()
+        self.assertIn("data\\reestr\\Устав Los Santos County Sheriff Department.json", ps1)
+        self.assertIn("Ресурсы на месте", ps1)
+
+    def test_bat_wrapper_calls_ps1(self):
+        bat = Path("build_nuitka_standalone.bat").read_text(encoding="utf-8")
+        self.assertIn("build_nuitka_standalone.ps1", bat)
+
+    def test_program_dir_falls_back_to_exe(self):
+        """В собранной программе data ищется рядом с exe, а не по __file__."""
+        src = Path("main.py").read_text(encoding="utf-8")
+        block = src.split("def _program_dir")[1].split("def _document_regulation")[0]
+        self.assertIn("sys.executable", block)
+        self.assertIn("RESOURCE_DIR", block)

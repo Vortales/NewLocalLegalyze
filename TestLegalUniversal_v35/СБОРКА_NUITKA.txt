@@ -1,5 +1,5 @@
 ================================================================================
-                    ЭТАЛОННЫЙ СИНТАКСИС СБОРКИ NUITKA (v26)
+                    ЭТАЛОННЫЙ СИНТАКСИС СБОРКИ NUITKA (v35)
                  Режим: Standalone (папка с Legalyze.exe и библиотеками)
 ================================================================================
 
@@ -8,10 +8,82 @@
 всех модулей (PyQt6, CDP, шифрование, генерация PDF, сбор логов).
 
 --------------------------------------------------------------------------------
-1. КОМАНДА ДЛЯ ЗАПУСКА ИЗ КОРНЯ ПАПКИ TestLegalUniversal_v26:
+0. БЫСТРЫЙ СТАРТ (рекомендуется)
 --------------------------------------------------------------------------------
 
-python -m nuitka --mode=standalone --msvc=latest --lto=yes --enable-plugin=pyqt6 --windows-console-mode=disable --windows-icon-from-ico=icon.ico --include-package=requests --include-package=websocket --include-package=cryptography --include-package=fpdf --include-module=machine_profile --include-module=browser_trace --include-module=web_compat --include-module=diagnostics --include-module=storage_paths --include-data-files=data/DejaVuSans.ttf=data/DejaVuSans.ttf --include-data-files=data/FONT-LICENSE.txt=data/FONT-LICENSE.txt --include-distribution-metadata=PyQt6 --include-distribution-metadata=PyQt6-Qt6 --include-distribution-metadata=PyQt6-WebEngine --include-distribution-metadata=requests --include-distribution-metadata=urllib3 --include-distribution-metadata=websocket-client --include-distribution-metadata=cryptography --include-distribution-metadata=fpdf2 --assume-yes-for-downloads --product-name=Legalyze --file-description="Legalyze" --company-name=Legalyze --file-version=1.0.5.0 --product-version=1.0.5.0 --copyright="Legalyze" --report=build/nuitka-report.xml --output-dir=build --output-filename=Legalyze.exe main.py
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\build_nuitka_standalone.ps1
+
+Скрипт делает всё сам: проверяет Python/Nuitka, ВЫБИРАЕТ КОМПИЛЯТОР C
+(MSVC при наличии Visual Studio, иначе --mingw64), собирает и проверяет, что
+в папке сборки лежат герб, печать, шрифты и устав. Обёртка: .bat с тем же именем.
+
+Ключи: -Msvc (только MSVC), -MinGW (только MinGW64), -Zig, -NoLto, -OneFile.
+
+--------------------------------------------------------------------------------
+1. КОМАНДА ВРУЧНУЮ ИЗ КОРНЯ ПАПКИ TestLegalUniversal_v35:
+--------------------------------------------------------------------------------
+
+python -m nuitka --mode=standalone --msvc=latest --lto=yes --enable-plugin=pyqt6 --windows-console-mode=disable --windows-icon-from-ico=icon.ico --include-package=requests --include-package=urllib3 --include-package=websocket --include-package=cryptography --include-package=fpdf --include-package=PIL --include-data-dir=data=data --nofollow-import-to=websocket.policyserver --nofollow-import-to=websocket.server --include-distribution-metadata=PyQt6 --include-distribution-metadata=PyQt6-Qt6 --include-distribution-metadata=PyQt6-WebEngine --include-distribution-metadata=requests --include-distribution-metadata=urllib3 --include-distribution-metadata=websocket-client --include-distribution-metadata=cryptography --include-distribution-metadata=fpdf2 --include-distribution-metadata=pillow --assume-yes-for-downloads --product-name=Legalyze --file-description="Legalyze" --company-name=Legalyze --file-version=1.1.0.0 --product-version=1.1.0.0 --copyright="Legalyze" --report=build/nuitka-report.xml --output-dir=build --output-filename=Legalyze.exe main.py
+
+Без Visual Studio: замените --msvc=latest на --mingw64 (Python 3.12 и ниже)
+или на --zig.
+
+--------------------------------------------------------------------------------
+1a. ЕСЛИ NUITKA ПИШЕТ "cannot locate suitable C compiler"
+--------------------------------------------------------------------------------
+
+Это ЕДИНСТВЕННАЯ причина прошлой неудачи — код и ключи были верные, упала
+только сборка C-кода. Варианты:
+
+  a) Visual Studio Build Tools: при установке отметить
+     "Desktop development with C++" (компонент MSVC v143 + Windows SDK).
+     ВАЖНО: запускать обычный PowerShell, НЕ "Developer PowerShell for VS" —
+     Nuitka тогда не находит компилятор.
+
+  b) Без Visual Studio: --mingw64 — Nuitka сама скачает MinGW64
+     (работает для Python 3.12 и ниже; для 3.13+ только MSVC или zig).
+
+  c) --zig — Nuitka скачает zig, работает для 64-битного Python.
+
+Проверка, что компилятор виден:
+    "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+
+--------------------------------------------------------------------------------
+1b. ЧТО ИСПРАВЛЕНО В КЛЮЧАХ v35
+--------------------------------------------------------------------------------
+
+* --include-data-dir=data=data  ВМЕСТО отдельных --include-data-files.
+  Раньше копировались только DejaVuSans.ttf и лицензия: в сборке НЕ было
+  data\gerb_lscsd.png, data\stamp_lscsd.png, data\fonts\*.ttf и
+  data\reestr\*.json. В exe это значит: нет герба и печати в постановлении,
+  нет рукописной подписи, и проверка постановления по уставу не работает
+  (устав не найден). Теперь едет вся папка data целиком.
+
+* --include-package=urllib3 и --include-package=PIL — используются
+  неявно (requests/Pillow), чтобы не зависеть от анализа импортов.
+
+* --nofollow-import-to=websocket.policyserver / websocket.server — именно они
+  давали предупреждения "Cannot follow import ... SyntaxError" (эти модули
+  серверные и клиенту не нужны).
+
+* --nofollow-import-to=PIL.ImageTk / tkinter — убирают предупреждение
+  anti-bloat про Tk (и лишний вес).
+
+* --include-distribution-metadata=pillow — добавлено (Pillow тоже читает
+  свои метаданные).
+
+* Собственные модули (postanovlenie_data, postanovlenie_ui, doc_render,
+  native_browser, win32_*) включены явно — подстраховка на случай
+  динамических импортов.
+
+* Версия продукта поднята до 1.1.0.0 (v35).
+
+Эти предупреждения БЕЗОПАСНЫ и не мешают сборке:
+  * "Should decide '--prefer-source-code' vs ... fontTools" — fontTools
+    подтягивает Pillow, работает и так;
+  * "anti-bloat: Not including 'PIL.ImageTk'" — так и задумано;
+  * "pyqt6: Support for PyQt6 is not perfect ... Qt threading" —
+    у нас потоковая работа идёт через QThread/сигналы, проверено на v25–v34.
 
 --------------------------------------------------------------------------------
 2. РАЗБОР КЛЮЧЕЙ И АНАЛИЗ КОРРЕКТНОСТИ:
@@ -44,8 +116,10 @@ python -m nuitka --mode=standalone --msvc=latest --lto=yes --enable-plugin=pyqt6
   Обязательно для библиотек, проверяющих свои версии через importlib.metadata
   (requests, urllib3, cryptography, PyQt6).
 
-* --include-data-files=data/...
-  Копирует шрифт DejaVuSans.ttf и лицензию внутрь папки сборки.
+* --include-data-dir=data=data
+  Копирует ВСЮ папку data (шрифты, герб, печать, устав в reestr/) внутрь
+  папки сборки. В v26 здесь были только шрифт и лицензия — из-за этого в
+  собранной программе не находились герб, печать и устав.
 
 * --output-dir=build --output-filename=Legalyze.exe
   Результат сборки помещается в папку build\Legalyze.dist\Legalyze.exe.
