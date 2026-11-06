@@ -458,6 +458,108 @@ class RemarksV30Tests(unittest.TestCase):
             self.assertNotIn("/", weird.name)
 
 
+class RemarksV30_1Tests(unittest.TestCase):
+    """v30.1: описание картинки ПЕРЕД блоком не мешает собрать документ из ответа."""
+
+    #: Ответ ровно из письма: сначала описание, потом блок постановления.
+    ANSWER = """На изображении представлен официальный документ (постановление о выдаче дисциплинарного взыскания) из внутриигрового или ролевого процесса (вероятно, GTA RP).
+
+**Полный текст документа:**
+
+===ПОСТАНОВЛЕНИЕ===
+Ведомство: Los Santos County Sheriff Department
+Подразделение: INTERNAL AFFAIRS DIVISION
+Вид документа: Постановление о выдаче дисциплинарного взыскания
+Заголовок: о выдаче дисциплинарного взыскания
+Номер: LSCSD-IAD-1
+Дата: 06.11.2026
+Постановление вынес: Marcus Nomad
+Должность: Куратор отдела IAD (Assistent sheriff)
+В отношении: Aliya Nomad
+Удостоверение: 131485
+Нарушенный акт: Устав Los Santos County Sheriff Department
+Пункт нарушения: пункта 8.5 и пункта 8.1
+Взыскание: строгий выговор
+Обстоятельства: При проведении проверки установлено, что сотрудник Aliya Nomad 06.11.2026 допустил грубое нарушение дресс-кода, а также проигнорировал законные приказы вышестоящего руководства.
+Доказательства: не представлены
+Постановляющая часть:
+1. За нарушение пунктов 8.5 и 8.1 Устава LSCSD привлечь сотрудника Aliya Nomad к дисциплинарной ответственности в виде строгого выговора.
+2. Настоящее постановление вступает в силу с момента его"""
+
+    def test_block_is_extracted_even_after_the_image_description(self):
+        block = pdoc.extract_document_block(self.ANSWER)
+        self.assertTrue(block.startswith("===ПОСТАНОВЛЕНИЕ"))
+        self.assertIn("Пункт нарушения: пункта 8.5 и пункта 8.1", block)
+        self.assertNotIn("на изображении", block.lower())
+
+    def test_answer_describing_an_image_still_builds_the_document(self):
+        base = pdoc.Postanovlenie(doc_number="LSCSD-IAD-1", subject_name="Aliya Nomad",
+                                  situation="сырые слова")
+        doc = pdoc.parse_ai_answer(self.ANSWER, base=base)
+        self.assertIsNotNone(doc)
+        self.assertEqual(doc.get("penalty"), "строгий выговор")
+        self.assertEqual(doc.get("violation_clause"), "пункта 8.5 и пункта 8.1")
+        self.assertIn("При проведении проверки установлено", doc.get("situation"))
+        # данные формы не затёрты сырым текстом пользователя
+        self.assertNotIn("сырые слова", doc.get("situation"))
+        self.assertEqual(doc.get("doc_number"), "LSCSD-IAD-1")
+
+    def test_truncated_answer_without_the_end_trigger_is_still_parsed(self):
+        """.png формируется, даже если ИИ не дописал «===КОНЕЦ ПОСТАНОВЛЕНИЯ===»."""
+        truncated = self.ANSWER.split("Постановляющая часть:")[0]
+        doc = pdoc.parse_ai_answer(truncated)
+        self.assertIsNotNone(doc)
+        self.assertEqual(doc.get("subject_name"), "Aliya Nomad")
+
+    def test_block_points_are_parsed(self):
+        doc = pdoc.parse_ai_answer(self.ANSWER)
+        self.assertTrue(doc.points)
+        self.assertIn("строгого выговора", doc.points[0])
+
+    def test_saved_files_include_the_ai_answer(self):
+        import tempfile
+        doc = pdoc.parse_ai_answer(self.ANSWER)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "postanovleniya"
+            written = [p.name for p in pdoc.save_ai_answer(root, doc, self.ANSWER)]
+            self.assertIn("ИИ-ответ.txt", written)
+            raw = (root / "LSCSD-IAD-1" / "ИИ-ответ.txt").read_text(encoding="utf-8")
+            self.assertIn("На изображении представлен", raw)   # как есть
+            self.assertIn("===ПОСТАНОВЛЕНИЕ===", raw)
+
+    def test_png_copy_lands_next_to_the_request(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "postanovleniya"
+            doc = pdoc.parse_ai_answer(self.ANSWER)
+            folder = pdoc.doc_folder(root, doc.get("doc_number"))
+            other = Path(tmp) / "выбранная папка"
+            other.mkdir()
+            import doc_render
+            made = doc_render.render_to_png(doc, other, "LSCSD-IAD-1")
+            copied = pdoc.copy_pngs_into(folder, made)
+            self.assertEqual([p.name for p in copied], ["LSCSD-IAD-1.png"])
+            self.assertTrue((folder / "LSCSD-IAD-1.png").is_file())
+            self.assertTrue(made[0].is_file())          # исходник не потерян
+
+    def test_title_without_the_word_postanovlenie_is_fixed(self):
+        cases = {
+            "о выдаче дисциплинарного взыскания": "Постановление о выдаче дисциплинарного взыскания",
+            "Снятие дисциплинарного взыскания": "Постановление о снятии дисциплинарного взыскания",
+            "Проведение внутренней проверки": "Постановление о проведении внутренней проверки",
+            "Отстранение от службы": "Постановление об отстранении от службы",
+            "": "Постановление о выдаче дисциплинарного взыскания",
+        }
+        for raw, expected in cases.items():
+            doc = pdoc.Postanovlenie(doc_type=pdoc.DOC_TYPES[0], doc_title=raw)
+            self.assertEqual(doc.document_title(), expected, raw)
+
+    def test_empty_answer_is_not_treated_as_a_document(self):
+        self.assertEqual(pdoc.extract_document_block("просто текст без блока"), "")
+        self.assertIsNone(pdoc.parse_ai_answer("просто текст без блока"))
+        self.assertIsNone(pdoc.parse_ai_answer(""))
+
+
 class HistoryTests(unittest.TestCase):
     def test_history_keeps_full_snapshot_for_editing(self):
         with tempfile.TemporaryDirectory() as tmp:

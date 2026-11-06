@@ -11,13 +11,13 @@
   "subject_id": "131485",
   "subject_rank": "",
   "subject_department": "",
-  "violation_act": "Устава Los Santos County Sheriff Department",
-  "violation_clause": "3.1",
-  "penalty": "строгий выговор",
+  "violation_act": "",
+  "violation_clause": "",
+  "penalty": "",
   "situation": "сотрудник грубо нарушает дресс код и не исполняет приказы",
   "evidence": "",
   "extra": "",
   "points": [],
-  "created_at": 1793983527.8679812,
+  "created_at": 1793984481.5861914,
   "source": "form"
 }

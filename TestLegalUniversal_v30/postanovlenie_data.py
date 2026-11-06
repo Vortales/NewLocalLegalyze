@@ -372,8 +372,37 @@ class Postanovlenie:
         return self.doc_title or self.doc_type
 
     def document_title(self) -> str:
-        """Полный заголовок для бланка: «Постановление …» на русском."""
-        return self.title().strip()
+        """Полный заголовок для бланка.
+
+        ИИ часто присылает «Заголовок: о выдаче дисциплинарного взыскания»
+        (без слова «Постановление»), и на бланке получалось просто
+        «о выдаче дисциплинарного взыскания». Если вида документа нет в
+        заголовке — подставляем его.
+        """
+        title = self.title().strip()
+        doc_type = self.get("doc_type").strip()
+        if not title:
+            return doc_type
+        low_title = title.lower()
+        prefix = doc_type.split()[0] if doc_type else "Постановление"
+        if prefix.lower() not in low_title:
+            # «Снятие дисциплинарного взыскания» -> «Постановление о снятии…»
+            head = title[:1].lower() + title[1:]
+            if head.startswith(("о ", "об ")):
+                return f"{prefix} {head}"
+            # Падеж меняем у ПЕРВОГО слова: «Снятие …» -> «о снятии …»,
+            # «Проведение …» -> «о проведении …», «Отстранение …» -> «об отстранении …».
+            first, _, rest = head.partition(" ")
+            for ending, replacement in (("ание", "ании"), ("ение", "ении"),
+                                        ("тие", "тии"), ("ие", "ии")):
+                if first.endswith(ending):
+                    first = first[: -len(ending)] + replacement
+                    break
+            joiner = "об " if first[:1] in "аоэиуыеёюя" else "о "
+            return f"{prefix} {joiner}{first}{(' ' + rest) if rest else ''}"
+        if title[:1].islower():
+            return title[:1].upper() + title[1:]
+        return title
 
     def missing_fields(self) -> list:
         """Обязательные поля, без которых документ не имеет смысла."""
@@ -761,12 +790,39 @@ def strip_triggers(text: str) -> str:
     return out.strip()
 
 
+def extract_document_block(text: str) -> str:
+    """Вырезает из ответа ИИ только блок постановления.
+
+    Реальная ситуация: ИИ пишет «На изображении представлен официальный
+    документ…» и уже ПОСЛЕ этого выдаёт `===ПОСТАНОВЛЕНИЕ=== …`. Раньше
+    детектор описания срабатывал на весь текст и документ отбрасывался —
+    в PNG уходили данные формы, а не то, что ответил ИИ. Теперь описание до
+    блока и после него просто не участвует в разборе.
+    """
+    raw = str(text or "")
+    start = -1
+    for marker in (TRIGGER_DOC_START, "===ПОСТАНОВЛЕНИЕ==", "ПОСТАНОВЛЕНИЕ"):
+        start = raw.find(marker)
+        if start >= 0:
+            break
+    if start < 0:
+        return ""
+    block = raw[start:]
+    for end_marker in (TRIGGER_DOC_END, "===КОНЕЦ ПОСТАНОВЛЕНИЯ==="):
+        end = block.find(end_marker)
+        if end >= 0:
+            return block[:end + len(end_marker)]
+    # конец блока мог не прийти (обрезанный ответ) — режем по «КОНЕЦ ОТВЕТА»
+    end = block.find(TRIGGER_ANSWER_END)
+    return block[:end] if end >= 0 else block
+
+
 def parse_ai_answer(answer_text: str, base: Postanovlenie | None = None) -> Postanovlenie | None:
-    """Достаёт поля постановления из ответа ИИ (v27, триггерная логика).
+    """Достаёт поля постановления из ответа ИИ (триггерная логика).
 
     Понимает оба вида ответа, которые допускает промт:
     * структурированный — строки «Ключ: значение» и нумерованные пункты;
-    * свободный — тогда просто сохраняется как ситуация/дополнительно.
+    * свободный — тогда просто сохраняется как обстоятельства.
 
     Возвращает `None`, если ответ не похож на постановление.
     """
@@ -774,9 +830,13 @@ def parse_ai_answer(answer_text: str, base: Postanovlenie | None = None) -> Post
     if not text.strip():
         return None
 
-    if looks_like_image_description(text):
-        # Описание картинки — не документ: базовый вариант (то, что пользователь
-        # заполнил в форме) остаётся как есть, чтобы в PNG не попал пересказ.
+    # v30.1: работаем только с блоком постановления, если он есть в ответе.
+    block = extract_document_block(text)
+    if block:
+        text = block
+    elif looks_like_image_description(text):
+        # Блока нет, а пришло описание картинки — это не документ: базовый
+        # вариант (данные формы) остаётся как есть, чтобы в PNG не попал пересказ.
         diag_event("postanovlenie.answer_is_image_description")
         return None
 
@@ -855,6 +915,22 @@ def doc_folder(root, number: str = "") -> Path:
     folder = Path(root) / safe.strip()
     folder.mkdir(parents=True, exist_ok=True)
     return folder
+
+
+def copy_pngs_into(folder, paths) -> list:
+    """Кладёт копии готовых PNG в папку выдачи (рядом с заявкой и ответом ИИ)."""
+    import shutil
+    folder = Path(folder)
+    copied = []
+    for path in paths or []:
+        try:
+            target = folder / Path(path).name
+            if Path(path).resolve() != target.resolve():
+                shutil.copy2(path, target)
+            copied.append(target)
+        except Exception:
+            continue
+    return copied
 
 
 def save_ai_answer(root, doc: Postanovlenie, answer_text: str) -> list:

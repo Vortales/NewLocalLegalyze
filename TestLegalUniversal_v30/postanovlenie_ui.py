@@ -97,7 +97,8 @@ class PostanovlenieDialog(QDialog):
         self.base_dir = Path(base_dir) if base_dir else Path(__file__).resolve().parent
         self.assets = assets or render.DocAssets(self.base_dir)
         self.regulation = regulation
-        self.history = history or pdata.DocumentHistory(self.base_dir / "postanovleniya")
+        self.history = history or pdata.DocumentHistory(
+            (Path(base_dir) if base_dir else Path(__file__).resolve().parent) / "postanovleniya")
         self.document = pdata.Postanovlenie()
         self.chat_txt_path = ""
         self.png_paths: list = []
@@ -403,12 +404,22 @@ class PostanovlenieDialog(QDialog):
 
     # ------------------------------------------------- папка сохранения (v28)
 
+    def _documents_root(self) -> Path:
+        """Корень папки постановлений — один и тот же для формы и для клиента.
+
+        v30.1: раньше заявка уходила в `postanovleniya/` рядом с программой, а
+        ответ ИИ сохранялся в `%APPDATA%\Legalyze\postanovleniya\` — файлы
+        «разъезжались» по разным папкам, и казалось, что ответ не сохраняется.
+        """
+        return self.base_dir / "postanovleniya"
+
     def _current_folder(self) -> Path:
+        """Куда писать PNG: выбранная пользователем папка либо <root>/png."""
         try:
             from config import postanovlenie_dir
             return postanovlenie_dir(self.cfg)
         except Exception:
-            return self.base_dir / "postanovleniya" / "png"
+            return self._documents_root() / "png"
 
     def _current_folder_text(self) -> str:
         return f"PNG сохраняются в: {self._current_folder()}"
@@ -504,7 +515,7 @@ class PostanovlenieDialog(QDialog):
             diag.exception("ui.postanovlenie.preview")
             QMessageBox.warning(self, "Ошибка", f"Не удалось построить документ: {exc}")
             return None
-        folder = self.base_dir / "postanovleniya" / "preview"
+        folder = self._documents_root() / "preview"
         paths = render.save_pages(pages, folder, f"preview-{doc.doc_number or 'doc'}")
         self.png_paths = paths
         from PyQt6.QtGui import QPixmap
@@ -548,13 +559,13 @@ class PostanovlenieDialog(QDialog):
             folder = self._current_folder()
             self.png_paths = render.save_pages(
                 pages, folder, doc.doc_number or "postanovlenie")
-            chat_txt = self.base_dir / "postanovleniya" / "chat" / doc.chat_txt_name()
+            chat_txt = self._documents_root() / "chat" / doc.chat_txt_name()
             chat_txt.parent.mkdir(parents=True, exist_ok=True)
             chat_txt.write_text(doc.to_chat_txt(), encoding="utf-8")
             self.chat_txt_path = str(chat_txt)
             # v30: в папку выдачи кладём то, что отправил пользователь —
             # заявку и поля формы, рядом с ними потом появятся файлы от ИИ.
-            out = pdata.doc_folder(self.base_dir / "postanovleniya", doc.get("doc_number"))
+            out = pdata.doc_folder(self._documents_root(), doc.get("doc_number"))
             (out / "Заявка (отправлено в чат).txt").write_text(
                 doc.to_chat_txt(), encoding="utf-8")
             (out / "Заявка-поля.json").write_text(

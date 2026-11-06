@@ -5205,14 +5205,18 @@ class MainWindow(QMainWindow):
         """
         if getattr(self, "_doc_assets_cache", None) is None:
             # base_dir — папка программы (ресурсы), а не APP_DIR (%APPDATA%).
-            self._doc_assets_cache = prender.DocAssets(Path(__file__).resolve().parent)
+            self._doc_assets_cache = prender.DocAssets(self._program_dir())
             diag.event("documents.assets", **self._doc_assets_cache.describe())
         return self._doc_assets_cache
+
+    def _program_dir(self) -> Path:
+        """Папка программы: там лежат data/ (герб, печать, шрифты, устав)."""
+        return Path(__file__).resolve().parent
 
     def _document_regulation(self):
         """Правила ведомства из законодательной базы (data/reestr/*.json)."""
         if not hasattr(self, "_doc_regulation_cache"):
-            path = pdoc.default_regulation_path(APP_DIR / "data")
+            path = pdoc.default_regulation_path(self._program_dir() / "data")
             self._doc_regulation_cache = pdoc.Regulation(path)
             diag.event("documents.regulation", loaded=bool(path),
                        title=self._doc_regulation_cache.title)
@@ -5220,7 +5224,7 @@ class MainWindow(QMainWindow):
 
     def _document_history(self):
         if getattr(self, "_doc_history", None) is None:
-            self._doc_history = pdoc.DocumentHistory(APP_DIR / "postanovleniya")
+            self._doc_history = pdoc.DocumentHistory(self._documents_root())
         return self._doc_history
 
     def _open_postanovlenie(self):
@@ -5231,7 +5235,7 @@ class MainWindow(QMainWindow):
         try:
             dlg = PostanovlenieDialog(
                 self.cfg,
-                base_dir=APP_DIR,
+                base_dir=self._program_dir(),
                 history=self._document_history(),
                 assets=self._document_assets(),
                 regulation=self._document_regulation(),
@@ -5297,12 +5301,18 @@ class MainWindow(QMainWindow):
             return
         self._doc_sent_path = str(self.document_path)
         name = Path(self.document_path).name
+        # v30.1: ИИ регулярно отвечал описанием картинки («На изображении
+        # представлен…»), и в документ уходил пересказ. Сообщение теперь прямо
+        # запрещает описывать вложения и требовать только блок постановления.
         text = (
             f"Сформировано постановление, файл заявки приложен: «{name}». "
-            "Выдай постановление строго по данным из этого файла, в формате "
-            f"промта, от {pdoc.TRIGGER_DOC_START} до "
-            f"{pdoc.TRIGGER_DOC_END} и заверши ответ "
-            f"{pdoc.TRIGGER_ANSWER_END}."
+            "Работай ТОЛЬКО с текстом заявки. Не описывай изображения и вложения, "
+            "не пиши «на изображении представлен», не разбирай шапку, логотип и "
+            "подписи. Ответь одним блоком от "
+            f"{pdoc.TRIGGER_DOC_START} до {pdoc.TRIGGER_DOC_END} "
+            f"и заверши ответ {pdoc.TRIGGER_ANSWER_END}. "
+            "Обстоятельства перепиши официально-деловым языком, укажи конкретное "
+            "взыскание из п. 4.1 Устава LSCSD и номер пункта(-ов) устава."
         )
         self._set_status("Отправка заявки на постановление…", THEME["accent"])
         diag.event("documents.auto_send", name=name, chars=len(text))
@@ -5360,40 +5370,65 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=task, name="DocAnswerPoll", daemon=True).start()
 
+    def _documents_root(self):
+        """Корень папки постановлений — та же папка, что у формы.
+
+        v30.1: форма пишет заявку в `.../postanovleniya/` рядом с программой,
+        а ответ ИИ раньше сохранялся в `%APPDATA%\Legalyze\postanovleniya\`.
+        Из-за этого «ответа ИИ» рядом с заявкой не было. Теперь оба места
+        берут ОДНУ папку: выбранную пользователем либо папку программы.
+        """
+        try:
+            return Path(postanovlenie_dir(self.cfg)).parent
+        except Exception:
+            diag.exception("documents.root")
+            return Path(__file__).resolve().parent / "postanovleniya"
+
     @pyqtSlot(str)
     def _apply_document_answer(self, text):
         self._doc_answer_busy = False
-        if not text or not pdoc.has_document_trigger(text):
+        text = str(text or "")
+        if not text.strip():
             return
-        if not pdoc.has_answer_end(text):
+        # v30.1: ответ сохраняем ВСЕГДА и сразу — даже если разбор ниже упадёт
+        # или документ пересобираться не будет. Требование: «текст, который
+        # получаем от ИИ, должен сохраняться».
+        raw_path = None
+        base_doc = self._document_doc if isinstance(self._document_doc, pdoc.Postanovlenie) \
+            else pdoc.Postanovlenie()
+        root = self._documents_root()
+        try:
+            folder = pdoc.doc_folder(root, base_doc.get("doc_number"))
+            raw_path = folder / "ИИ-ответ.txt"
+            raw_path.write_text(text.replace("\r\n", "\n"), encoding="utf-8")
+            diag.event("documents.raw_saved", path=str(raw_path), chars=len(text))
+        except Exception:
+            diag.exception("documents.save_raw")
+        if not pdoc.has_document_trigger(text):
+            return
+        # Не ждём «===КОНЕЦ ОТВЕТА===»: ответ мог обрезаться, а данные в нём уже
+        # есть. Просто не трогаем документ, пока блок постановления не появился.
+        if not pdoc.extract_document_block(text) and not pdoc.has_answer_end(text):
             return
         doc = pdoc.parse_ai_answer(text, base=self._document_doc)
         if doc is None:
-            # v30: ИИ ответил описанием картинки или чем-то посторонним —
-            # документ не пересобираем, но сырой ответ сохраняем для разбора.
-            diag.event("documents.answer_not_parsed", chars=len(text or ""))
-            try:
-                folder = pdoc.doc_folder(APP_DIR / "postanovleniya",
-                                         (self._document_doc or pdoc.Postanovlenie()).get("doc_number"))
-                (folder / "ИИ-ответ (не разобран).txt").write_text(
-                    str(text or "").replace("\r\n", "\n"), encoding="utf-8")
-            except Exception:
-                diag.exception("documents.save_unparsed")
+            diag.event("documents.answer_not_parsed", chars=len(text))
             self._doc_watch_timer.stop()
-            self._set_status("Ответ ИИ не похож на постановление — см. postanovleniya/",
+            self._set_status("Ответ ИИ сохранён, но постановление из него не собрано",
                              "#f59e0b")
             return
         self._doc_watch_timer.stop()
         try:
             pages = prender.render_document(doc, self._document_assets())
-            # v30: папка выдачи — postanovleniya/<номер>/: там и «что отправил я»
+            # Папка выдачи — postanovleniya/<номер>/: там и «что отправил я»
             # (из формы), и «что ответил ИИ», и готовый PNG.
-            root = APP_DIR / "postanovleniya"
             folder = pdoc.doc_folder(root, doc.get("doc_number"))
             paths = prender.save_pages(pages, folder, doc.get("doc_number") or "postanovlenie")
-            self._document_pngs = paths
+            # копия PNG — в папку выдачи, рядом с заявкой и ответом ИИ
+            self._document_pngs = pdoc.copy_pngs_into(folder, paths) or paths
             saved_ai = pdoc.save_ai_answer(root, doc, text)
-            diag.event("documents.ai_saved", files=[p.name for p in saved_ai])
+            diag.event("documents.ai_saved", files=[p.name for p in saved_ai],
+                       folder=str(folder))
             self._document_history().save(doc)
         except Exception:
             diag.exception("documents.render_ai")
