@@ -4181,7 +4181,7 @@ class MainWindow(QMainWindow):
 
         # v27: универсальная кнопка документов (пока внутри — Постановление;
         # сюда же придут Жалобы, Иски и Обращения).
-        self.btn_documents = QPushButton("Документы")
+        self.btn_documents = QPushButton("Документ")
         self.btn_documents.setToolTip("Постановления (позже — жалобы, иски, обращения)")
         self.btn_documents.setFixedHeight(24)
         self.btn_documents.setStyleSheet(icon_btn)
@@ -5304,14 +5304,16 @@ class MainWindow(QMainWindow):
         self._refresh_template_button()
 
     def _refresh_template_button(self):
-        """Кнопка «Шаблон» показывает активного персонажа (v35)."""
+        """v35: подпись кнопки всегда короткая — «Шаблон».
+
+        Активный персонаж показывается ТОЛЬКО в подсказке: название профиля
+        на кнопке распирало верхнюю панель и было причиной замечания.
+        """
+        self.btn_template.setText("Шаблон")
         try:
             name = active_profile_name(self.cfg)
-            label = f"Шаблон: {name}" if name else "Шаблон"
-            # короче — чтобы не распирало верхнюю панель
-            self.btn_template.setText(label if len(label) <= 22 else label[:21] + "…")
             self.btn_template.setToolTip(
-                f"Активный персонаж: {name}. Нажмите, чтобы выбрать другого.")
+                f"Данные шаблона. Активный персонаж: {name}")
         except Exception:
             diag.exception("main.refresh_template_button")
 

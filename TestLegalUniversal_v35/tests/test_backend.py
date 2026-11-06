@@ -4141,6 +4141,16 @@ class TemplateProfilesTests(unittest.TestCase):
                        "_refresh_template_button"):
             self.assertIn(marker, main_src)
 
+    def test_button_labels_are_short(self):
+        """Подписи — ровно «Шаблон», «Документ», «Промт», без имени персонажа."""
+        main_src = Path("main.py").read_text(encoding="utf-8")
+        self.assertIn('QPushButton("Шаблон")', main_src)
+        self.assertIn('QPushButton("Документ")', main_src)
+        self.assertIn('QPushButton("Промт")', main_src)
+        self.assertNotIn('QPushButton("Документы")', main_src)
+        self.assertIn('self.btn_template.setText("Шаблон")', main_src)
+        self.assertNotIn('f"Шаблон: {name}"', main_src)
+
     def test_top_buttons_are_compact(self):
         main_src = Path("main.py").read_text(encoding="utf-8")
         for button in ("btn_template", "btn_documents", "btn_prompt"):
