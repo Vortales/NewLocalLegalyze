@@ -484,6 +484,19 @@ class PostanovlenieProkuroraDialog(QDialog):
             "«Обстоятельствам» и доказательствам."),
     }
 
+    def _stage_note(self, stage: str) -> str:
+        """Подсказка про доказательства этапа (v41).
+
+        Этап 1 обходится без видеофиксации: обстоятельств ещё нет. Этап 2
+        открывается только после принятия обращения, и санкцию определяют
+        «Обстоятельства» — видео с тайм-кодами прокурора.
+        """
+        if stage == gdata.GOV_STAGE_PRIMARY:
+            return ("Этап 1: видеофиксация не требуется — решение принимается "
+                    "по тексту обращения (Регламент подачи, ст. 5, 7, 14, 16).")
+        return ("Этап 2: подключается после принятия обращения на этапе 1 и "
+                "опирается на видеофиксацию с тайм-кодами прокурора.")
+
     def _fill_types(self, stage: str) -> None:
         """Заполняет список видов решений для этапа (v39, v39.1, v41).
 
@@ -547,7 +560,9 @@ class PostanovlenieProkuroraDialog(QDialog):
         else:
             note = ("Нужны «Обстоятельства» (видно на видеофиксации) и норма "
                     "ответственности — санкция должна на что-то опираться.")
-        self.stage_hint.setText(self.STAGE_HINTS[stage] + " " + note)
+        # v41: к подсказке добавлено, нужна ли на этом этапе видеофиксация.
+        self.stage_hint.setText(self.STAGE_HINTS[stage] + " " + note + " "
+                                + self._stage_note(stage))
         self.stage_hint.setStyleSheet("color: #8f96bf; font-size: 11px;")
 
     def _toggle_extra(self) -> None:

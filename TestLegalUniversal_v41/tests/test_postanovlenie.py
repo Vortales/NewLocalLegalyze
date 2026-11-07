@@ -2725,6 +2725,12 @@ class V41TwoStageAutoTests(unittest.TestCase):
         self.assertIn("type_choices(stage)", block)
         self.assertIn("auto_type_for", src)
 
+    def test_stage_note_explains_evidence_of_the_stage(self):
+        src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
+        self.assertIn("_stage_note", src)
+        self.assertIn("видеофиксация не требуется", src)
+        self.assertIn("после принятия обращения на этапе 1", src)
+
     def test_prompt_asks_for_appeal_based_decision_on_stage_one(self):
         src = (_P("main.py")).read_text(encoding="utf-8")
         self.assertIn("Определит ИИ по обращению", src)
