@@ -1,0 +1,16 @@
+Timeout (0:05:00)!
+Thread 0x00001cd0 (most recent call first):
+  File "D:\Users\79528\PycharmProjects\PythonProject1\Legalyze\test2\TestLegalUniversal_v40\diagnostics.py", line 508 in watch
+  File "D:\Users\79528\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1012 in run
+  File "D:\Users\79528\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1075 in _bootstrap_inner
+  File "D:\Users\79528\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1032 in _bootstrap
+
+Thread 0x00005284 (most recent call first):
+  File "D:\Users\79528\PycharmProjects\PythonProject1\Legalyze\test2\TestLegalUniversal_v40\diagnostics.py", line 444 in uncaught
+  File "D:\Users\79528\PycharmProjects\PythonProject1\Legalyze\test2\TestLegalUniversal_v40\main.py", line 5483 in _open_postanovlenie_prokurora
+  File "D:\Users\79528\PycharmProjects\PythonProject1\Legalyze\test2\TestLegalUniversal_v40\main.py", line 5379 in <lambda>
+  File "D:\Users\79528\PycharmProjects\PythonProject1\Legalyze\test2\TestLegalUniversal_v40\main.py", line 5390 in _open_documents
+  File "D:\Users\79528\PycharmProjects\PythonProject1\Legalyze\test2\TestLegalUniversal_v40\main.py", line 4209 in <lambda>
+  File "D:\Users\79528\PycharmProjects\PythonProject1\Legalyze\test2\TestLegalUniversal_v40\main.py", line 7940 in main
+  File "D:\Users\79528\PycharmProjects\PythonProject1\Legalyze\test2\TestLegalUniversal_v40\diagnostics.py", line 276 in wrapped
+  File "D:\Users\79528\PycharmProjects\PythonProject1\Legalyze\test2\TestLegalUniversal_v40\main.py", line 7955 in <module>
