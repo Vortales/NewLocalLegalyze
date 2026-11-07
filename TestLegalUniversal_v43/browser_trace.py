@@ -1267,8 +1267,60 @@ JS_EXPORT_AUDIT = r"""(() => {
                    names: list.map(x => String(x.name || '').slice(0, 80)),
                    sizes: list.map(x => x.size | 0)});
     }
-    const chips = Array.from(document.querySelectorAll('div.ArblTe')).slice(0, 8);
-    const chipNames = chips.map(c => (c.textContent || '').trim().slice(0, 80));
+    // v43.1: имена вложений. Раньше брали только `div.ArblTe` — у Gemini
+    // классы перегенерируются, и на живой странице выходило «чипы есть, имена
+    // пустые» (лог 20261108-004441-4820-baf125: chips=4, chip_names=["","","",""],
+    // 460 повторных записей «attached_unnamed» и проваленная проверка export).
+    // Теперь: известные контейнеры → любые элементы с именем файла в тексте или
+    // в атрибутах (aria-label / title / download) → соседи композера.
+    const NAME_RE = /[^\s/\\]+\.(pdf|txt|docx?|rtf|odt|xlsx?|csv|pptx?|png|jpe?g|gif|webp|zip|rar|7z|md|json)\b/i;
+    const clean = (v) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, 80);
+    const pickName = (el) => {
+      if (!el) return '';
+      for (const attr of ['aria-label', 'title', 'download', 'data-name', 'data-filename']) {
+        const v = clean(el.getAttribute && el.getAttribute(attr));
+        if (v && NAME_RE.test(v)) return v;
+      }
+      const text = clean(el.textContent);
+      if (text && NAME_RE.test(text)) {
+        const m = text.match(NAME_RE);
+        return m ? clean(m[0]) : text;
+      }
+      for (const child of Array.from(el.querySelectorAll ? el.querySelectorAll('*') : []).slice(0, 6)) {
+        const v = clean(child.getAttribute && (child.getAttribute('aria-label') || child.getAttribute('title')));
+        if (v && NAME_RE.test(v)) return v;
+      }
+      return '';
+    };
+    const seen = new Set();
+    const chips = [];
+    for (const node of Array.from(document.querySelectorAll(
+        'div.ArblTe, [class*="attachment"], [class*="Attachment"], [class*="file-chip"],'
+        + ' [class*="fileChip"], [data-test-id*="attachment"], [role="listitem"]')).slice(0, 24)) {
+      if (seen.has(node)) continue;
+      seen.add(node);
+      chips.push(node);
+    }
+    // Запасной путь: искать прямо по имени файла в видимом тексте страницы —
+    // так вложение видно даже при полностью перегенерированных классах.
+    if (!chips.length) {
+      for (const node of Array.from(document.querySelectorAll('body *')).slice(0, 4000)) {
+        if (node.children && node.children.length > 6) continue;
+        if (!pickName(node)) continue;
+        if (seen.has(node)) continue;
+        // Берём самый глубокий элемент: обёртка вложений тоже содержит те же
+        // имена, и без этой проверки один файл считался двумя.
+        let deeper = false;
+        for (const child of Array.from(node.children || [])) {
+          if (pickName(child)) { deeper = true; break; }
+        }
+        if (deeper) continue;
+        seen.add(node);
+        chips.push(node);
+        if (chips.length >= 8) break;
+      }
+    }
+    const chipNames = chips.slice(0, 8).map(pickName);
     const progress = document.querySelectorAll(
       '[role="progressbar"], mat-progress-bar, .progress, [aria-busy="true"]').length;
     const alerts = [];
@@ -1401,6 +1453,25 @@ def capture_page(page, reason="probe", full=False):
     return result
 
 
+#: Имя файла с расширением — то, что считается доказательством вложения (v43.1).
+_FILE_NAME_RE = re.compile(
+    r"[^\s/\\]+\.(?:pdf|txt|docx?|rtf|odt|xlsx?|csv|pptx?|png|jpe?g|gif|webp|zip|rar|7z|md|json)\b",
+    re.IGNORECASE)
+
+
+def _file_name_or_empty(value) -> str:
+    """Возвращает имя файла из текста или пустую строку (v43.1).
+
+    Нужна, чтобы «подтверждённым вложением» не считался любой текст страницы:
+    доказательство — имя с расширением файла, а не слово «файл».
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = _FILE_NAME_RE.search(text)
+    return match.group(0)[:80] if match else ""
+
+
 def audit_export(page, stage, paths=None, extra=None):
     """Доказательство экспорта: что на диске и что реально в странице.
 
@@ -1454,7 +1525,24 @@ def audit_export(page, stage, paths=None, extra=None):
         if chips > 0 and names:
             verdict = "confirmed_attached"
         elif chips > 0:
-            verdict = "attached_unnamed"
+            # v43.1: имя могло не попасть в первые чипы — проверяем ещё раз по
+            # всему тексту страницы, прежде чем объявлять «имена не прочитались».
+            try:
+                found = page.eval(
+                    """(() => {
+                      const m = (document.body.innerText || '').match(
+                        /[^\\s/\\\\]+\\.(pdf|txt|docx?|rtf|odt|xlsx?|csv|pptx?|png|jpe?g|gif|webp|zip|rar|7z|md|json)\\b/i);
+                      return m ? m[0].slice(0, 80) : '';
+                    })()""", timeout=2).get("value")
+            except Exception:
+                found = ""
+            found = _file_name_or_empty(found)
+            if found:
+                names = [found]
+                record["chip_names"] = names
+                verdict = "confirmed_attached"
+            else:
+                verdict = "attached_unnamed"
         elif not disk_ok and files:
             verdict = "file_missing_on_disk"
         elif with_files > 0:
@@ -1464,7 +1552,6 @@ def audit_export(page, stage, paths=None, extra=None):
         else:
             verdict = "not_attached"
         record["verdict"] = verdict
-        _bump("export.verdict.%s" % verdict)
     else:
         record["verdict"] = "page_unavailable"
     if extra:
@@ -1484,6 +1571,12 @@ def audit_export(page, stage, paths=None, extra=None):
         _bump("export.audit_repeat")
         record["repeated"] = True
         return record
+    # v43.1: счётчик вердикта считается ТОЛЬКО по записанным аудитам. Раньше он
+    # увеличивался до проверки на повтор, и в разборе появлялось «attached_unnamed
+    # ×460» при 17 реальных записях — ошибку нельзя было отличить от шума
+    # (лог 20261108-004441-4820-baf125).
+    if record.get("verdict"):
+        _bump("export.verdict.%s" % record["verdict"])
     _last_audit = {"signature": signature, "at": now, "verdict": record.get("verdict")}
     _put(_record("export.audit", **record))
     if record.get("verdict") not in (None, "confirmed_attached"):

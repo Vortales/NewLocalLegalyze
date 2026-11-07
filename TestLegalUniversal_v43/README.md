@@ -22,10 +22,21 @@
 | «Обстоятельства» попадали в «УСТАНОВИЛ» даже в постановлении о принятии | обстоятельства прокурора уходят в бланк только на этапах, где они нужны (`stage_meta(kind)["needs_facts"]`); на этапе принятия / переадресации / прекращения документ остаётся процедурным |
 | Пока не сделана «Проверка ИИ», «Сформировать» должна быть недоступна | кнопка заблокирована (`case.intake_checked()`), при наведении — подсказка; в `_form` та же проверка на случай программного вызова |
 
-**Тесты:** 326 в `tests.test_postanovlenie` (OK), полный прогон — 591
+## v43.1 — исправления по разбору сессии `20261108-004441-4820-baf125`
+
+Автоматический разбор этой сессии показал три дефекта; все исправлены.
+
+| Что в логе | Причина | Что сделано |
+|---|---|---|
+| `AttributeError` в `postanovlenie_prokuror_ui.py:198` (`_refresh`) — окно «Обращения» не открывалось | `QListWidget.addItem(str)` в PyQt6 возвращает `None`, а код вызывал `item.setForeground(...)` | элемент создаётся явно (`QListWidgetItem(...)`), затем `addItem(item)` |
+| `export` **НЕ ОК**: «attached_unnamed ×460», `chips=4`, `chip_names=["","","",""]` | читался только `div.ArblTe`, а у Gemini классы перегенерируются | ищем имена в известных контейнерах, в `aria-label`/`title`/`download`, по тексту элемента и запасным проходом по странице; имя обязательно с расширением файла (`_file_name_or_empty`) |
+| счётчик «×460» при 17 реальных записях | вердикт считался до проверки на повтор | счётчик вердикта увеличивается только для записанных аудитов |
+| `RuntimeError` в `Browser.setPermission` | часть сборок Chrome отвечает `-32602`; право уже выдано через `grantPermissions` | это ожидаемая неподдержка: пишется событие `browser.set_permission_unsupported`, а не исключение |
+
+**Тесты:** 326 в `tests.test_postanovlenie` (OK), полный прогон — 599
 (1 известный FAIL `test_v25_log_rotation…`, 4 skipped).
 
-## Сборка v43 (Nuitka) — исправленный синтаксис
+## Сборка v43.1 (Nuitka) — исправленный синтаксис
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build_nuitka_standalone.ps1
@@ -49,7 +60,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build_nuitka_standalone.ps
 * `--include-distribution-metadata=pillow` — добавлено;
 * собственные модули (`postanovlenie_data`, `postanovlenie_ui`, `doc_render`,
   `native_browser`, `win32_*`) включены явно;
-* версия продукта 1.9.0.0;
+* версия продукта 1.9.1.0;
 * `_program_dir()` в exe ищет `data/` рядом с exe и через `RESOURCE_DIR`,
   а не только по `__file__`.
 

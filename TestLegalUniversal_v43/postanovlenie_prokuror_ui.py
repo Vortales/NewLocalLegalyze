@@ -34,7 +34,8 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QTextOption
 from PyQt6.QtWidgets import (
     QAbstractScrollArea, QApplication, QComboBox, QDialog, QFileDialog,
-    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox,
+    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QListWidgetItem, QMessageBox,
     QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QTabWidget,
     QVBoxLayout, QWidget,
 )
@@ -191,12 +192,17 @@ class GovCasesDialog(QDialog):
         self.list.clear()
         rows = cases.case_rows(self.store)
         for row in rows:
-            item = self.list.addItem(
+            # v43.1: `QListWidget.addItem(str)` в PyQt6 возвращает None, и
+            # `item.setForeground(...)` падал с AttributeError — стартовое окно
+            # обращений вообще не открывалось (лог 20261108-004441-4820-baf125,
+            # postanovlenie_prokuror_ui.py:198). Создаём элемент явно.
+            item = QListWidgetItem(
                 f"{row['title']} — {row['status']}\n"
                 f"    {row['progress']} · обновлено {row['updated']}")
             # состояние дела видно сразу: цвет строки = цвет состояния
             item.setForeground(QBrush(QColor(row["color"])))
             item.setData(Qt.ItemDataRole.UserRole, row["number"])
+            self.list.addItem(item)
         self.count_label.setText(f"Всего: {len(rows)}")
         self.empty_label.setVisible(not rows)
         if rows:

@@ -1200,10 +1200,15 @@ def grant_microphone(browser, page):
                 "permission": {"name": "audioCapture"},
                 "setting": "granted",
             }, timeout=5)
-        except Exception:
+        except Exception as exc:
+            # v43.1: часть сборок Chrome отвечает -32602 «Invalid parameters» —
+            # это ОЖИДАЕМО, а не авария: право уже выдано через
+            # `Browser.grantPermissions` строкой выше. В журнале раньше писалась
+            # ошибка (лог 20261108-004441-4820-baf125), и разбор показывал
+            # исключение там, где всё работало.
             _SET_PERMISSION_UNSUPPORTED = True
-            diag.event("browser.set_permission_unsupported")
-            diag.exception("native_browser.set_permission")
+            diag.event("browser.set_permission_unsupported",
+                       error=str(exc)[:160])
     # Проверка, а не предположение: состояние права видно в логе. Если оно не
     # `granted`, микрофон страницы не запустится — причина будет видна сразу.
     # v19: `awaitPromise` — раньше запрос возвращал сам Promise, в логе было

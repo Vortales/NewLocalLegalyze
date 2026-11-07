@@ -82,7 +82,7 @@ ENCRYPTION_KEY = b"legalyze-fernet-key-32bytes-long!"
 # v26: серверной части больше нет. Строка оставлена только для совместимости
 # импортов (`from config import SERVER_URL`); ни один запрос по ней не идёт.
 SERVER_URL = ""
-CURRENT_VERSION = "1.4.0"
+CURRENT_VERSION = "1.4.1"
 
 # Порядок полей в Шаблон.txt (фиксированный, менять нельзя).
 TEMPLATE_FIELDS = ("Name", "ID", "Fraction", "Rang", "Department", "JobTitle")

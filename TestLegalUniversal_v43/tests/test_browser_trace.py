@@ -22,6 +22,11 @@ sys.path.insert(0, str(ROOT))
 import browser_trace as btrace  # noqa: E402
 
 
+def _P(name):
+    """Путь к файлу версии от корня проекта (как в test_postanovlenie)."""
+    return Path(__file__).resolve().parent.parent / name
+
+
 class FakeValue:
     """Ответ CDP на один вызов: `{"value": ...}`."""
 
@@ -382,3 +387,119 @@ class AnalyzerTests(TraceSessionMixin):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class V431AttachmentNamesTests(unittest.TestCase):
+    """v43.1: имена вложений читаются даже при перегенерированных классах.
+
+    Лог 20261108-004441-4820-baf125: 4 чипа вложений, `chip_names` пустой,
+    460 записей «attached_unnamed» и проваленная проверка `export`.
+    """
+
+    def test_audit_js_knows_more_than_one_chip_selector(self):
+        import browser_trace as bt
+        js = bt.JS_EXPORT_AUDIT
+        self.assertNotIn("div.ArblTe')", js)          # не единственный селектор
+        for marker in ("attachment", "file-chip", "aria-label", "NAME_RE", "pickName"):
+            self.assertIn(marker, js)
+
+    def test_file_name_helper_requires_an_extension(self):
+        import browser_trace as bt
+        self.assertEqual(bt._file_name_or_empty("Memphis.pdf"), "Memphis.pdf")
+        self.assertEqual(bt._file_name_or_empty("Шаблон.txt"), "Шаблон.txt")
+        self.assertEqual(bt._file_name_or_empty("Отчёт.docx (3.4 МБ)"), "Отчёт.docx")
+        self.assertEqual(bt._file_name_or_empty("никаких имён"), "")
+        self.assertEqual(bt._file_name_or_empty(""), "")
+
+    def test_verdict_counter_ignores_repeats(self):
+        """Счётчик вердикта не должен раздуваться повторами (было ×460)."""
+        import tempfile
+        import time
+        import browser_trace as bt
+
+        class Page:
+            def eval(self, js, timeout=2):
+                if "body.innerText" in js and "NAME_RE" not in js:
+                    return {"value": ""}
+                return {"value": {"file_inputs": 0, "inputs_with_files": 0,
+                                  "chips": 4, "chip_names": ["a.pdf", "b.txt", "", ""],
+                                  "progress": 1, "alerts": [], "ready": "complete",
+                                  "focused": True, "active": "textarea"}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bt.install(tmp, enabled=True)
+            bt._counters.clear()          # install() в одном процессе — no-op
+            for _ in range(25):
+                bt.audit_export(Page(), "complete")
+                time.sleep(0.001)
+            counters = dict(bt._counters)
+            self.assertEqual(counters.get("export.verdict.confirmed_attached"), 1)
+            self.assertGreaterEqual(counters.get("export.audit_repeat") or 0, 20)
+
+    def test_unnamed_chips_stay_unnamed_without_names(self):
+        import tempfile
+        import time
+        import browser_trace as bt
+
+        class Page:
+            def eval(self, js, timeout=2):
+                if "body.innerText" in js and "NAME_RE" not in js:
+                    return {"value": "просто текст без файлов"}
+                return {"value": {"file_inputs": 0, "inputs_with_files": 0,
+                                  "chips": 4, "chip_names": ["", "", "", ""],
+                                  "progress": 1, "alerts": [], "ready": "complete",
+                                  "focused": True, "active": "textarea"}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bt.install(tmp, enabled=True)
+            bt._counters.clear()
+            bt.audit_export(Page(), "complete")
+            self.assertEqual(bt._counters.get("export.verdict.attached_unnamed"), 1)
+
+    def test_name_in_page_text_confirms_attachment(self):
+        import tempfile
+        import browser_trace as bt
+
+        class Page:
+            def eval(self, js, timeout=2):
+                if "body.innerText" in js and "NAME_RE" not in js:
+                    return {"value": "Memphis.pdf"}
+                return {"value": {"file_inputs": 0, "inputs_with_files": 0,
+                                  "chips": 4, "chip_names": ["", "", "", ""],
+                                  "progress": 1, "alerts": [], "ready": "complete",
+                                  "focused": True, "active": "textarea"}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bt.install(tmp, enabled=True)
+            bt._counters.clear()
+            record = bt.audit_export(Page(), "complete")
+            self.assertEqual(record.get("verdict"), "confirmed_attached")
+            self.assertEqual(record.get("chip_names"), ["Memphis.pdf"])
+
+
+class V431CaseWindowTests(unittest.TestCase):
+    """v43.1: стартовое окно обращений не падает на addItem()."""
+
+    def test_refresh_builds_items_explicitly(self):
+        src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
+        block = src[src.index("class GovCasesDialog"):src.index("class PostanovlenieProkuroraDialog")]
+        # addItem(str) в PyQt6 возвращает None -> item.setForeground() падал
+        self.assertIn("QListWidgetItem(", block)
+        self.assertIn("self.list.addItem(item)", block)
+        self.assertNotIn("item = self.list.addItem(", block)
+
+    def test_imported_from_qt_widgets(self):
+        src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
+        head = src[:src.index("import diagnostics")]
+        self.assertIn("QListWidgetItem", head)
+
+
+class V431ExpectedProtocolErrorTests(unittest.TestCase):
+    """v43.1: неподдержка Browser.setPermission — событие, а не исключение."""
+
+    def test_set_permission_logs_event_not_exception(self):
+        src = (_P("native_browser.py")).read_text(encoding="utf-8")
+        block = src[src.index('browser.send("Browser.setPermission"'):]
+        block = block[:block.index("Проверка, а не предположение")]
+        self.assertIn("browser.set_permission_unsupported", block)
+        self.assertNotIn('diag.exception("native_browser.set_permission")', block)
