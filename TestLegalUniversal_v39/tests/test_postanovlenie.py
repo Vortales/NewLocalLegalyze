@@ -2246,6 +2246,8 @@ class V39DocTypeTwoPartsTests(unittest.TestCase):
 
     def test_suggestion_prefers_criminal_over_court(self):
         doc = gdata.PostanovlenieProkurora(
+            doc_stage=gdata.GOV_STAGE_FINAL,
+            doc_type=gdata.GOV_DOC_TYPE_AUTO,
             situation="В действиях сотрудника усматриваются признаки "
                       "преступления, предусмотренного статьёй 15.1 УК.")
         self.assertEqual(gdata.suggest_doc_type(doc),
@@ -2253,12 +2255,15 @@ class V39DocTypeTwoPartsTests(unittest.TestCase):
 
     def test_suggestion_uses_penalty_field(self):
         doc = gdata.PostanovlenieProkurora(
+            doc_stage=gdata.GOV_STAGE_FINAL, doc_type=gdata.GOV_DOC_TYPE_AUTO,
             penalty="привлечь к административной ответственности, штраф в размере 30000 $")
         self.assertEqual(gdata.suggest_doc_type(doc),
                          "О привлечении к административной ответственности")
 
     def test_suggestion_falls_back_to_refusal_without_evidence(self):
-        doc = gdata.PostanovlenieProkurora(situation="Изложены обстоятельства дела.")
+        doc = gdata.PostanovlenieProkurora(
+            doc_stage=gdata.GOV_STAGE_FINAL, doc_type=gdata.GOV_DOC_TYPE_AUTO,
+            situation="Изложены обстоятельства дела.")
         self.assertEqual(gdata.suggest_doc_type(doc),
                          "Об отказе в удовлетворении обращения")
 
@@ -2300,3 +2305,91 @@ class V39PaginationTests(unittest.TestCase):
         # последний фрагмент абзаца действительно попал в документ
         self.assertIn("Фрагмент 219 описания события", text)
         self.assertGreater(len(pages), 1)
+
+
+class V391AutoForPrimaryStageTests(unittest.TestCase):
+    """v39.1: «Определит ИИ» доступен и на первичном этапе."""
+
+    def setUp(self):
+        self.form = "1. Данные о заявителе: Mark Skywalker 152306\n" \
+                    "3. Сведения о нарушителе: Kyria Suspectzx 8332 FIB\n"
+
+    def _doc(self, description):
+        from postanovlenie_prokuror_data import PostanovlenieProkurora
+        return PostanovlenieProkurora(
+            doc_stage=gdata.GOV_STAGE_PRIMARY, doc_type=gdata.GOV_DOC_TYPE_AUTO,
+            appeal_raw=(self.form + f"5. Подробное описание ситуации: {description}\n"
+                        "Подпись и расшифровка заявителя: M.S"))
+
+    def test_auto_is_offered_on_both_stages(self):
+        src = Path("postanovlenie_prokuror_ui.py").read_text(encoding="utf-8")
+        block = src[src.index("def _fill_types"):]
+        block = block[:block.index("def _on_stage_changed")]
+        self.assertIn("[gdata.GOV_DOC_TYPE_AUTO] + list(gdata.stage_types(stage))",
+                      block)
+
+    def test_auto_primary_accepts_well_formed_appeal(self):
+        self.assertEqual(gdata.suggest_doc_type(self._doc("Задержали без оснований.")),
+                         "О принятии обращения к собственному производству")
+
+    def test_auto_primary_refuses_without_description(self):
+        doc = self._doc("")
+        self.assertEqual(gdata.suggest_doc_type(doc),
+                         "Об отказе в принятии обращения к рассмотрению")
+
+    def test_auto_primary_stops_withdrawn_appeal(self):
+        self.assertEqual(
+            gdata.suggest_doc_type(self._doc("Прошу отозвать обращение.")),
+            "О прекращении производства по обращению")
+
+    def test_auto_primary_redirects_foreign_competence(self):
+        self.assertEqual(
+            gdata.suggest_doc_type(self._doc("Вопрос не относится к компетенции ОГП.")),
+            "О переадресации обращения по подведомственности")
+
+    def test_primary_suggestion_always_in_primary_part(self):
+        for text in ("", "Обычное описание.", "Прошу отозвать обращение."):
+            stage = gdata.gov_stage(gdata.suggest_doc_type(self._doc(text)))
+            self.assertEqual(stage, gdata.GOV_STAGE_PRIMARY, text)
+
+
+class V391LayoutTests(unittest.TestCase):
+    """v39.1: форма должна вмещать содержимое без обрезки."""
+
+    def setUp(self):
+        self.src = Path("postanovlenie_prokuror_ui.py").read_text(encoding="utf-8")
+
+    def test_window_is_wide_enough_for_two_columns(self):
+        self.assertIn("setMinimumSize(1080, 720)", self.src)
+        self.assertIn("resize(1240, 880)", self.src)
+
+    def test_left_column_fits_long_rank_and_type(self):
+        self.assertIn("left.setMinimumWidth(460)", self.src)
+        self.assertIn("left.setMaximumWidth(500)", self.src)
+
+    def test_stage_combo_uses_short_labels_with_tooltips(self):
+        self.assertIn("GOV_STAGE_SHORT", self.src)
+        self.assertIn("ToolTipRole", self.src)
+
+    def test_type_combo_does_not_clip_long_value(self):
+        self.assertIn("setMinimumContentsLength", self.src)
+        self.assertIn("cb_type.setToolTip(text)", self.src)
+
+    def test_only_one_hint_label_under_lists(self):
+        # две подписи подряд наезжали друг на друга — оставлена одна
+        self.assertNotIn("self.type_hint = self._label(", self.src)
+        self.assertIn("self.type_hint = self.stage_hint", self.src)
+
+    def test_empty_appeal_hint_is_neutral_not_warning(self):
+        block = self.src[self.src.index("def _on_appeal_changed"):]
+        block = block[:block.index("def _build_history_tab")]
+        self.assertNotIn('"Поле пустое', block)
+
+    def test_placeholders_do_not_carry_instructions(self):
+        self.assertNotIn("Необязательно: если оставить пустым", self.src)
+        self.assertIn("пусто — обстоятельства ИИ соберёт из обращения", self.src)
+
+    def test_short_stage_labels_fit_the_combo(self):
+        for stage, title in gdata.GOV_STAGE_SHORT.items():
+            self.assertLessEqual(len(title), 48, title)
+            self.assertIn(stage, gdata.GOV_STAGE_TITLES)

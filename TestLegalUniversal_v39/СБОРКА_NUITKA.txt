@@ -76,7 +76,7 @@ python -m nuitka --mode=standalone --msvc=latest --lto=yes --enable-plugin=pyqt6
   native_browser, win32_*) включены явно — подстраховка на случай
   динамических импортов.
 
-* Версия продукта поднята до 1.5.0.0 (v39).
+* Версия продукта поднята до 1.5.0.0 (v39, v39.1).
 
 * Добавлены модули постановлений Прокурора (postanovlenie_prokuror_data,
   postanovlenie_prokuror_ui) и проверка наличия data\gerb_gov.png и

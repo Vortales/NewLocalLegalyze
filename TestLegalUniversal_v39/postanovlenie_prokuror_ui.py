@@ -22,7 +22,8 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QTextOption
 from PyQt6.QtWidgets import (
-    QAbstractScrollArea, QComboBox, QDialog, QFileDialog, QFormLayout,
+    QAbstractScrollArea, QApplication, QComboBox, QDialog, QFileDialog,
+    QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit,
     QPushButton, QScrollArea, QSizePolicy, QTabWidget, QVBoxLayout, QWidget,
 )
@@ -107,8 +108,12 @@ class PostanovlenieProkuroraDialog(QDialog):
         self._drag_pos = None
 
         self.setWindowTitle("Документы — Постановление Прокурора")
-        self.setMinimumSize(760, 640)
-        self.resize(980, 780)
+        # v39.1: «не все объекты влазят». При 980×780 левая колонка с
+        # подсказками и полями «Должность»/«Вид решения» упиралась в границы, а
+        # правая колонка уходила за край. Минимум теперь рассчитан на две
+        # колонки с запасом, а высота — чтобы обе текстовые области читались.
+        self.setMinimumSize(1080, 720)
+        self.resize(1240, 880)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -134,9 +139,13 @@ class PostanovlenieProkuroraDialog(QDialog):
         field = QLineEdit()
         field.setPlaceholderText(placeholder)
         field.setMinimumHeight(28)
-        field.setMinimumWidth(120)
+        # v39.1: «Куратор отдела IAD …» обрезался левой рамкой поля. Поле
+        # должно быть достаточно широким даже в узкой колонке, а длинный
+        # текст — прокручиваться внутри, а не упираться в границу.
+        field.setMinimumWidth(190)
         field.setSizePolicy(QSizePolicy.Policy.Expanding,
                             QSizePolicy.Policy.Fixed)
+        field.setClearButtonEnabled(False)
         return field
 
     def _text_area(self, placeholder: str = "", height: int = 160) -> QPlainTextEdit:
@@ -233,10 +242,11 @@ class PostanovlenieProkuroraDialog(QDialog):
         self.fields: dict = {}
         self.texts: dict = {}
 
+        # v39.1: инструкция была на три строки и вместе с двумя подсказками под
+        # списками съедала высоту — «не все объекты влазят». Оставлено главное.
         hint_top = self._label(
-            "Вставьте обращение целиком — ИИ сам найдёт заявителя, нарушителя, "
-            "предмет и дату события. Обстоятельства опишите как прокурор: что "
-            "видно на видеофиксации, с тайм-кодами.", "Caption")
+            "Обращение — целиком (ИИ найдёт заявителя, нарушителя, предмет). "
+            "Обстоятельства — что видно на видеофиксации, с тайм-кодами.", "Caption")
         hint_top.setWordWrap(True)
         outer.addWidget(hint_top)
 
@@ -250,14 +260,17 @@ class PostanovlenieProkuroraDialog(QDialog):
         left_layout.setSpacing(6)
         # v38: реквизиты занимают ровно свою ширину, всё «лишнее» место
         # забирают текстовые поля — раньше правая колонка уезжала за край.
-        left.setMaximumWidth(360)
+        # v39.1: было 360 px — этого не хватало ни «Куратор отдела IAD …», ни
+        # «О завершении проверки по обращению и передаче материалов в…».
+        left.setMinimumWidth(460)
+        left.setMaximumWidth(500)
         columns.addWidget(left, 0)
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(6)
-        right.setMinimumWidth(360)
+        right.setMinimumWidth(480)
         columns.addWidget(right, 1)
         columns.setStretch(0, 0)
         columns.setStretch(1, 1)
@@ -274,29 +287,41 @@ class PostanovlenieProkuroraDialog(QDialog):
         #      по Регламенту, ст. 23 и Закону об ОГП, ст. 9, 33.
         # Вид санкции ИИ определяет сам по «Обстоятельствам», если оставить
         # в списке «Определит ИИ по обстоятельствам».
+        # v39.1: полные подписи этапа не влезали в список и обрывались на
+        # «(до 72 час» — в поле короткая подпись, полная — в подсказке.
         self.cb_stage = QComboBox()
-        self.cb_stage.addItem(gdata.GOV_STAGE_TITLES[gdata.GOV_STAGE_PRIMARY],
-                              gdata.GOV_STAGE_PRIMARY)
-        self.cb_stage.addItem(gdata.GOV_STAGE_TITLES[gdata.GOV_STAGE_FINAL],
-                              gdata.GOV_STAGE_FINAL)
+        for stage_key in (gdata.GOV_STAGE_PRIMARY, gdata.GOV_STAGE_FINAL):
+            self.cb_stage.addItem(gdata.GOV_STAGE_SHORT[stage_key], stage_key)
+            self.cb_stage.setItemData(
+                self.cb_stage.count() - 1,
+                gdata.GOV_STAGE_TITLES[stage_key], Qt.ItemDataRole.ToolTipRole)
+        self.cb_stage.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.cb_stage.setMinimumContentsLength(18)
+        self.cb_stage.setToolTip(gdata.GOV_STAGE_TITLES[gdata.GOV_STAGE_PRIMARY])
+        self.cb_stage.setMinimumWidth(200)
         self.cb_stage.currentIndexChanged.connect(
             lambda _i: self._on_stage_changed())
         doc_form.addRow(self._field_label("Этап"), self.cb_stage)
 
         self.cb_type = QComboBox()
         self.cb_type.setEditable(True)
+        self.cb_type.setMinimumWidth(200)
         self._fill_types(gdata.GOV_STAGE_PRIMARY)
         self.cb_type.currentTextChanged.connect(
             lambda text: self._on_type_changed(text))
         doc_form.addRow(self._field_label("Вид решения"), self.cb_type)
 
-        # Пояснение к выбранному этапу: что именно проверяется.
+        # Пояснение к этапу и виду: одна переносимая подпись вместо двух
+        # строк, которые наезжали друг на друга и обрезались (v39.1).
         self.stage_hint = self._label("", "Caption")
         self.stage_hint.setWordWrap(True)
-        doc_form.addRow(self._label(""), self.stage_hint)
-        self.type_hint = self._label("", "Caption")
-        self.type_hint.setWordWrap(True)
-        doc_form.addRow(self._label(""), self.type_hint)
+        self.stage_hint.setMinimumWidth(320)
+        self.stage_hint.setTextFormat(Qt.TextFormat.PlainText)
+        self.stage_hint.setSizePolicy(QSizePolicy.Policy.Preferred,
+                                      QSizePolicy.Policy.Minimum)
+        left_layout.addWidget(self.stage_hint)
+        self.type_hint = self.stage_hint
         self._on_stage_changed()
 
         self.fields["doc_number"] = self._input("AG-937")
@@ -334,9 +359,7 @@ class PostanovlenieProkuroraDialog(QDialog):
         # ── обращение: ОДНО поле целиком (v37) ───────────────────────────
         right_layout.addWidget(self._label("Обращение (вставить целиком)", "Section"))
         appeal_hint = self._label(
-            "Скопируйте обращение гражданина как есть: «От:», «В:», пункты "
-            "1–10, тайм-коды, подпись. Заявителя, нарушителя, предмет и дату "
-            "события ИИ определит сам — отдельных полей для них больше нет.",
+            "Копировать как есть: «От:», «В:», пункты 1–10, тайм-коды, подпись.",
             "Caption")
         appeal_hint.setWordWrap(True)
         right_layout.addWidget(appeal_hint)
@@ -361,19 +384,23 @@ class PostanovlenieProkuroraDialog(QDialog):
         # ── обстоятельства: что прокурор увидел на видеофиксации ─────────
         right_layout.addWidget(self._label("Обстоятельства (что видно на видеофиксации)", "Section"))
         facts_hint = self._label(
-            "Прокурор смотрит видеофиксацию и пишет, что и когда видно. "
-            "Тайм-коды и номера сохраняются дословно: ИИ не должен их менять.",
-            "Caption")
+            "Что и когда видно; тайм-коды и номера — дословно.", "Caption")
         facts_hint.setWordWrap(True)
         right_layout.addWidget(facts_hint)
         self.texts["situation"] = self._text_area(height=140)
+        # v39.1: служебное «Необязательно…» прямо в placeholder
+        # читалось как часть вставленных данных. Пояснение — отдельной
+        # подписью под полем, а в поле только образец тайм-кодов.
         self.texts["situation"].setPlaceholderText(
-            "00:04 — сотрудник в чёрной форме с ОПЗ 8332 требует остановиться, "
-            "представиться не успевает; 02:09 — открывает огонь… "
-            "Необязательно: если оставить пустым, обстоятельства ИИ соберёт из "
-            "обращения.")
+            "00:04 — сотрудник с ОПЗ 8332 требует остановиться; "
+            "02:09 — открывает огонь…")
         self.texts["situation"].textChanged.connect(self._refresh_ooc_hint)
         right_layout.addWidget(self.texts["situation"], 2)
+        optional_hint = self._label(
+            "Необязательно: пусто — обстоятельства ИИ соберёт из обращения.",
+            "Caption")
+        optional_hint.setWordWrap(True)
+        right_layout.addWidget(optional_hint)
 
         # v36 (промт 1.19 п. 19): IC/OOC-термины не должны попадать в документ.
         self.ooc_hint = self._label("", "Caption")
@@ -444,19 +471,29 @@ class PostanovlenieProkuroraDialog(QDialog):
         scroll.setWidget(page)
         return scroll
 
-    def _fill_types(self, stage: str) -> None:
-        """Заполняет список видов решений для этапа (v39).
+    #: Подсказки этапов. Одна строка на этап: раньше две подписи подряд
+    #: обрезались и наезжали друг на друга (v39.1).
+    STAGE_HINTS = {
+        gdata.GOV_STAGE_PRIMARY: (
+            "Первичное решение (до 24 ч, ст. 12): принять, отказать по ст. 16, "
+            "переадресовать по ст. 18–19 или прекратить по ст. 25. Санкция не "
+            "назначается."),
+        gdata.GOV_STAGE_FINAL: (
+            "Итоговое решение (до 72 ч, ст. 23): вид санкции по "
+            "«Обстоятельствам» и доказательствам."),
+    }
 
-        На итоговом этапе первым идёт «Определит ИИ по обстоятельствам»:
-        пользователь вставляет жалобу и обстоятельства, а вид санкции
-        выбирает ИИ.
+    def _fill_types(self, stage: str) -> None:
+        """Заполняет список видов решений для этапа (v39, v39.1).
+
+        «Определит ИИ по обстоятельствам» стоит первым на ЛЮБОМ этапе: все
+        четыре первичных решения выводятся из самого обращения, поэтому их
+        тоже можно доверить ИИ (замечание пользователя).
         """
         self.cb_type.blockSignals(True)
         current = self.cb_type.currentText().strip()
         self.cb_type.clear()
-        types = list(gdata.stage_types(stage))
-        if stage == gdata.GOV_STAGE_FINAL:
-            types = [gdata.GOV_DOC_TYPE_AUTO] + types
+        types = [gdata.GOV_DOC_TYPE_AUTO] + list(gdata.stage_types(stage))
         self.cb_type.addItems(types)
         if current in types:
             self.cb_type.setCurrentText(current)
@@ -471,44 +508,40 @@ class PostanovlenieProkuroraDialog(QDialog):
         stage = self.cb_stage.currentData() or gdata.GOV_STAGE_PRIMARY
         self._fill_types(stage)
         self._set_field("doc_stage", stage)
-        if hasattr(self, "stage_hint"):
-            if stage == gdata.GOV_STAGE_PRIMARY:
-                hint = ("Первичное решение по обращению (до 24 часов, ст. 12): "
-                        "принять к производству, отказать по конкретному "
-                        "основанию статьи 16, переадресовать по статьям 18–19 "
-                        "или прекратить по статье 25. Санкция здесь не "
-                        "назначается.")
-            else:
-                hint = ("Итоговое решение по существу (до 72 часов, ст. 23): "
-                        "вид санкции. Если оставить «Определит ИИ по "
-                        "обстоятельствам», санкцию выберет ИИ по разделу "
-                        "«Обстоятельства» и доказательствам.")
-            self.stage_hint.setText(hint)
-            self.stage_hint.setStyleSheet("color: #8f96bf; font-size: 11px;")
+        if hasattr(self, "cb_stage"):
+            # Полная формулировка этапа с нормами — в подсказке списка.
+            self.cb_stage.setToolTip(gdata.GOV_STAGE_TITLES[stage])
         self._on_type_changed(self.cb_type.currentText())
 
     def _on_type_changed(self, text: str) -> None:
         """Вид решения выбран: подсказываем, чего не хватает для этапа (v39)."""
         text = (text or "").strip()
         self._set_field("doc_type", text or gdata.GOV_DOC_TYPE_AUTO)
-        if not hasattr(self, "type_hint"):
+        # Длинный вид решения не должен обрываться в поле: полный текст — в
+        # подсказке, ширина списка подстраивается под содержимое (v39.1).
+        if hasattr(self, "cb_type"):
+            self.cb_type.setToolTip(text)
+            self.cb_type.setMinimumContentsLength(min(30, max(16, len(text))))
+        if not hasattr(self, "stage_hint"):
             return
+        if text and text != gdata.GOV_DOC_TYPE_AUTO:
+            stage = gdata.gov_stage(text)
+            self.cb_stage.blockSignals(True)
+            self.cb_stage.setCurrentIndex(0 if stage == gdata.GOV_STAGE_PRIMARY else 1)
+            self.cb_stage.blockSignals(False)
+        stage = self.cb_stage.currentData() or gdata.GOV_STAGE_PRIMARY
         if text == gdata.GOV_DOC_TYPE_AUTO:
-            self.type_hint.setText("Вид санкции определит ИИ по «Обстоятельствам» "
-                                   "и доказательствам обращения.")
-            self.type_hint.setStyleSheet("color: #8f96bf; font-size: 11px;")
-            return
-        stage = gdata.gov_stage(text)
-        self.cb_stage.blockSignals(True)
-        self.cb_stage.setCurrentIndex(0 if stage == gdata.GOV_STAGE_PRIMARY else 1)
-        self.cb_stage.blockSignals(False)
-        if stage == gdata.GOV_STAGE_PRIMARY:
+            what = ("первичное решение по тексту обращения" if stage ==
+                    gdata.GOV_STAGE_PRIMARY else
+                    "вид санкции по «Обстоятельствам» и доказательствам")
+            note = f"Определит ИИ: {what}."
+        elif stage == gdata.GOV_STAGE_PRIMARY:
             note = "Нужен только текст обращения: проверяется форма и ст. 16."
         else:
-            note = ("Нужны «Обстоятельства» (что видно на видеофиксации) и норма "
+            note = ("Нужны «Обстоятельства» (видно на видеофиксации) и норма "
                     "ответственности — санкция должна на что-то опираться.")
-        self.type_hint.setText(note)
-        self.type_hint.setStyleSheet("color: #8f96bf; font-size: 11px;")
+        self.stage_hint.setText(self.STAGE_HINTS[stage] + " " + note)
+        self.stage_hint.setStyleSheet("color: #8f96bf; font-size: 11px;")
 
     def _toggle_extra(self) -> None:
         """Показывает/скрывает необязательную правовую часть."""
@@ -522,10 +555,15 @@ class PostanovlenieProkuroraDialog(QDialog):
             return
         raw = self.texts["appeal_raw"].toPlainText()
         if not raw.strip():
+            # v39.1: на скриншоте поле было ЗАПОЛНЕНО, а надпись «Поле пустое»
+            # горела — сигнал приходил от программной очистки при загрузке
+            # документа. Теперь пустое поле — это нейтральная подсказка, а
+            # предупреждение (жёлтым) появляется только при реальной попытке
+            # сформировать документ без обращения.
             self.appeal_hint.setText(
-                "Поле пустое: обращение обязательно — из него берутся заявитель, "
+                "Вставьте обращение целиком: из него берутся заявитель, "
                 "нарушитель, предмет и дата события.")
-            self.appeal_hint.setStyleSheet("color: #f59e0b; font-size: 11px;")
+            self.appeal_hint.setStyleSheet("color: #8f96bf; font-size: 11px;")
             return
         parsed = gdata.parse_appeal_text(raw)
         found = []
@@ -945,6 +983,29 @@ class PostanovlenieProkuroraDialog(QDialog):
         self.accept()
 
     # --------------------------------------------------------- перетаскивание
+
+    def showEvent(self, event):
+        """Окно не должно открываться за краем экрана (v39.1).
+
+        Замечание: «у левого края экрана видны обрезанные буквы» — форма
+        1240×880 на маленьком экране вылезала за границы. Прижимаем размер к
+        доступной области экрана и центрируем внутри неё.
+        """
+        super().showEvent(event)
+        try:
+            screen = self.screen() or QApplication.primaryScreen()
+            if screen is None:
+                return
+            area = screen.availableGeometry()
+            width = min(self.width(), max(area.width() - 40, 900))
+            height = min(self.height(), max(area.height() - 40, 640))
+            if (width, height) != (self.width(), self.height()):
+                self.resize(width, height)
+            x = area.x() + max(0, (area.width() - width) // 2)
+            y = area.y() + max(0, (area.height() - height) // 2)
+            self.move(x, y)
+        except Exception:
+            diag.exception("ui.postanovlenie.fit_screen")
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
