@@ -1475,3 +1475,204 @@ class V36ProkurorParsingTests(unittest.TestCase):
                                 "видеозаписью с тайм-кодами 05:01, 08:23 и 08:50.")
         self.doc.evidence = "видеозапись, тайм-коды 05:01, 08:23"
         self.assertEqual(self.doc.facts_text().count("В подтверждение"), 0)
+
+
+# --------------------------------------------------------------------------- #
+#  v37: дефекты, найденные в реальных выгрузках папки «Постановление/»
+# --------------------------------------------------------------------------- #
+
+#: Ответ ИИ из выгрузки LSCSD-IAD-1 (сокращённо, структура сохранена).
+AI_ANSWER_V37_IAD = (
+    "Перейти к основному контенту\n"
+    "Справка по использованию специальных возможностей\n"
+    "Memphis.pdf\n"
+    "PDF\n"
+    "Шаблон.txt\n"
+    "File\n"
+    "Заявка (отправлено в чат).txt\n"
+    "File\n"
+    "Чат в режиме ИИ: Сформировано постановление, файл заявки приложен: "
+    "«Заявка (отправлено в чат).txt». Работай ТОЛЬКО с текстом заявки. "
+    "НИ В КАКОМ РАЗДЕЛЕ не используй внеигровые термины: «IC», «OOC».\n"
+    "Вы отправили 3 файлов и сделали запрос \"Сформировано постановление\"\n"
+    "Сформировано постановление, файл заявки приложен: «Заявка (отправлено в чат).txt».\n"
+    "Ответ в режиме ИИ, исходные файлы: 3 файлов, исходный запрос: \"...\"\n"
+    "ПОСТАНОВЛЕНИЕ\n"
+    "Ведомство: LOS SANTOS COUNTY SHERIFF'S DEPARTMENT\n"
+    "Подразделение: INTERNAL AFFAIRS DIVISION\n"
+    "Вид документа: Постановление о выдаче дисциплинарного взыскания\n"
+    "Номер: LSCSD-IAD-1\n"
+    "Дата: 07.11.2026\n"
+    "Постановление вынес: Marcus Nomad\n"
+    "В отношении: Maison Nomad\n"
+    "Удостоверение: 190948\n"
+    "Нарушенный акт: Устав Los Santos County Sheriff Department\n"
+    "Пункт нарушения: 8.5\n"
+    "Нормативное основание: Этический кодекс штата San-Andreas\n"
+    "Взыскание: устный выговор\n"
+    "Обстоятельства: Сотрудник допустил нарушение дресс-кода при исполнении "
+    "служебных обязанностей.\n"
+    "Постановляющая часть:\n"
+    "За нарушение пункта 8.5 Устава применить устный выговор.\n"
+    "Установить срок отработки 48 часов.\n"
+    "КОНЕЦ ПОСТАНОВЛЕНИЯ\n"
+    "===КОНЕЦ ОТВЕТА===\n"
+    "Перейти к предыдущему запросу\n"
+    "Memphis.pdf\n"
+)
+
+#: Ответ ИИ из выгрузки AG-2 (структура сохранена).
+AI_ANSWER_V37_GOV = """STATE OF SAN-ANDREAS
+OFFICE OF THE ATTORNEY GENERAL
+ПОСТАНОВЛЕНИЕ № AG-2
+О принятии обращения к собственному производству
+г. Лос-Сантос, 07.11.2026
+Я, Прокурор штата Сан-Андреас Jonathan Raine, удостоверение № 198632, рассмотрев обращение гражданина Kirito Gold от 02.11.2026,
+УСТАНОВИЛ:
+Место события: в ходе служебной деятельности на территории штата Сан-Андреас. В Офис Генерального прокурора поступило обращение гражданина Kirito Gold.
+ПОСТАНОВИЛ:
+1. Принять обращение к производству.
+2. Возбудить прокурорскую проверку.
+3. Настоящее постановление вступает в законную силу с момента подписания.
+4. Настоящее решение может быть обжаловано вышестоящему прокурору в срок, не превышающий 72 часа.
+5. Прокурор штата Сан-Андреас
+6. J. Raine
+7. Удостоверение № 198632
+Основание: по обстоятельствам, указанным в заявке
+"""
+
+
+class V37ChatLeakTests(unittest.TestCase):
+    """Служебный текст веб-чата не попадает в документ."""
+
+    def setUp(self):
+        self.doc = pdoc.parse_ai_answer(AI_ANSWER_V37_IAD)
+
+    def test_chat_instructions_are_not_circumstances(self):
+        self.assertNotIn("IC", self.doc.situation)
+        self.assertNotIn("OOC", self.doc.situation)
+        self.assertNotIn("Сформировано постановление", self.doc.situation)
+
+    def test_chat_junk_lines_are_dropped(self):
+        for junk in ("PDF", "File", "Заявка (отправлено в чат).txt",
+                     "Перейти к предыдущему запросу"):
+            self.assertNotIn(junk, self.doc.situation)
+
+    def test_resolution_heading_opens_points(self):
+        """«Постановляющая часть:» раньше считалась заголовком и терялась."""
+        self.assertEqual(len(self.doc.points), 2)
+        self.assertIn("устный выговор", self.doc.points[0])
+        # резолюция не должна утечь в обстоятельства
+        self.assertNotIn("Установить срок отработки", self.doc.situation)
+        self.assertNotIn("Постановляющая часть", self.doc.situation)
+
+    def test_no_ooc_remarks_after_scrub(self):
+        self.assertEqual(pdoc.check_ooc(self.doc), [])
+
+
+class V37BareClauseTests(unittest.TestCase):
+    """Голый номер пункта получает падеж и название акта."""
+
+    def _doc(self, clause):
+        return pdoc.Postanovlenie(
+            doc_number="X", subject_name="Ivan Petrov", penalty="устный выговор",
+            violation_act="Устав Los Santos County Sheriff Department",
+            violation_clause=clause)
+
+    def test_bare_number_becomes_punkt(self):
+        point = self._doc("8.5").decision_points()[0]
+        self.assertIn("нарушением пункта 8.5 Устава Los Santos County", point)
+
+    def test_act_is_in_genitive(self):
+        self.assertNotIn("Устав Los Santos", self._doc("8.5").decision_points()[0])
+        self.assertIn("Устава Los Santos", self._doc("8.5").basis_text())
+
+    def test_vague_clause_is_not_a_norm(self):
+        doc = self._doc("по обстоятельствам, указанным в заявке")
+        self.assertNotIn("по обстоятельствам", doc.decision_points()[0])
+        self.assertNotIn("по обстоятельствам", doc.basis_text())
+        issues = " ".join(pdoc.check_document(doc))
+        self.assertIn("не указан", issues)
+
+    def test_penalty_with_extra_words_is_flagged(self):
+        doc = self._doc("8.5")
+        doc.points = ["Назначить устный выговор с занесением в личное дело."]
+        issues = " ".join(pdoc.check_document(doc))
+        self.assertIn("занесением в личное дело", issues)
+
+    def test_ethic_code_is_clause_8_6(self):
+        doc = self._doc("8.5")
+        doc.legal_basis = "Этический кодекс штата San-Andreas"
+        issues = " ".join(pdoc.check_document(doc))
+        self.assertIn("8.6", issues)
+
+
+class V37ProkurorTests(unittest.TestCase):
+    """Дефекты выгрузки AG-2."""
+
+    def setUp(self):
+        import postanovlenie_prokuror_data as g
+        self.g = g
+        self.doc = g.parse_gov_answer(AI_ANSWER_V37_GOV)
+
+    def test_signature_points_are_not_resolution(self):
+        points = self.doc.decision_points()
+        self.assertEqual(len(points), 4)
+        joined = " ".join(points)
+        self.assertNotIn("J. Raine", joined)
+        self.assertNotIn("Удостоверение", joined)
+
+    def test_place_placeholder_dropped(self):
+        self.assertNotIn("в ходе служебной деятельности",
+                         self.doc.facts_text())
+        self.assertNotIn("Место события:", self.doc.facts_text())
+
+    def test_placeholder_basis_dropped(self):
+        self.assertNotIn("по обстоятельствам", self.doc.basis_text())
+        self.assertNotIn("по обстоятельствам", self.doc.facts_text())
+
+    def test_author_found_in_preamble(self):
+        self.assertEqual(self.doc.get("author_name"), "Jonathan Raine")
+        self.assertEqual(self.doc.get("author_id"), "198632")
+
+    def test_appeal_without_norm_is_flagged(self):
+        """В AG-2 обжалование было без ссылки на статьи 27–28 Регламента."""
+        self.doc.applicant_name = "Kirito Gold"
+        issues = " ".join(self.g.check_gov_document(self.doc))
+        self.assertIn("27–28", issues)
+
+    def test_no_remarks_when_appeal_has_norm(self):
+        self.doc.applicant_name = "Kirito Gold"
+        self.doc.points = [
+            p for p in self.doc.decision_points() if "обжаловано" not in p]
+        self.doc.points.append(self.g.PostanovlenieProkurora().appeal_point())
+        self.assertEqual(self.g.check_gov_document(self.doc), [])
+
+    def test_appeal_form_is_parsed_not_pasted(self):
+        raw = (
+            "От: Kirito Gold 178393\n"
+            "1. Данные о заявителе: Kirito Gold 178393\n"
+            "2. Предмет обращения: заявление о преступлении должностного лица\n"
+            "3. Сведения о нарушителе: Todd Spencer 181956: FIB\n"
+            "4. Дата и время события: 31.10.2026 19:13 - 19:41\n"
+            "5. Подробное описание ситуации: \n"
+            "6. Подпись и расшифровка заявителя: G.Kirito\n")
+        self.assertTrue(self.g.looks_like_appeal_form(raw))
+        doc = self.g.PostanovlenieProkurora(situation=raw)
+        self.assertNotIn("Данные о заявителе", doc.facts_text())
+        issues = " ".join(self.g.check_gov_document(doc))
+        self.assertIn("Подробное описание ситуации", issues)
+
+
+class V37AuthorTests(unittest.TestCase):
+    """Поле «Постановление вынес: …» не должно съедаться маркером."""
+
+    def test_author_survives_marker_check(self):
+        text = ("===ПОСТАНОВЛЕНИЕ===\n"
+                "Постановление вынес: Marcus Nomad\n"
+                "Должность: Куратор отдела IAD\n"
+                "Обстоятельства: Сотрудник нарушил форму одежды.\n"
+                "===КОНЕЦ ОТВЕТА===\n")
+        doc = pdoc.parse_ai_answer(text)
+        self.assertEqual(doc.get("author_name"), "Marcus Nomad")
+        self.assertIn("Marcus Nomad", doc.to_document_txt())

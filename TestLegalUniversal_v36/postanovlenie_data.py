@@ -304,6 +304,29 @@ def normalize_clause(clause: str, act: str = "") -> str:
     return text.strip(" ,")
 
 
+_VAGUE_CLAUSE = re.compile(
+    r"^(по обстоятельствам|согласно обстоятельствам|по уставу|по заявке|"
+    r"по указанным обстоятельствам|не указан|не установлен)",
+    re.IGNORECASE,
+)
+
+
+def act_genitive(act: str) -> str:
+    """«Устав Los Santos» -> «Устава Los Santos» (после «нарушением …»)."""
+    text = _clean(act)
+    low = text.lower()
+    for nominative, genitive in (("устав ", "Устава "), ("кодекс ", "Кодекса "),
+                                 ("закон ", "Закона "), ("регламент ", "Регламента ")):
+        if low.startswith(nominative):
+            return genitive + text[len(nominative):]
+    return text
+
+
+def is_vague_clause(clause: str) -> bool:
+    """Пункт/статья — заглушка вида «по обстоятельствам, указанным в заявке»."""
+    return bool(_VAGUE_CLAUSE.match(_clean(clause)))
+
+
 def clause_genitive(clause: str) -> str:
     """«пункт 19) части 1 статьи а» -> «пункта 19) части 1 статьи а»."""
     text = _clean(clause)
@@ -311,6 +334,10 @@ def clause_genitive(clause: str) -> str:
     for nominative, genitive in _CLAUSE_GENITIVE:
         if low.startswith(nominative):
             return genitive + text[len(nominative):]
+    # v37: ИИ прислал «нарушением 8.5 Устав …» — без слова «пункт» фраза
+    # читается как ошибка. Голый номер устава получает нужный падеж.
+    if re.match(r"^\d+(\.\d+)+", text):
+        return f"пункта {text}"
     return text
 
 #: Поля, которые разрешено оставлять пустыми: их подбирает ИИ по обстоятельствам
@@ -542,6 +569,19 @@ class Postanovlenie:
             return "suspension"
         return "penalty"
 
+    def _violation_phrase(self) -> str:
+        """«нарушением пункта 8.5 Устава …» без заглушек «по обстоятельствам»."""
+        clause = self.get("violation_clause")
+        act = self.get("violation_act")
+        clean_clause = "" if is_vague_clause(clause) else clause
+        if clean_clause and act:
+            return f"{clause_genitive(clean_clause)} {act_genitive(act)}"
+        if clean_clause:
+            return clause_genitive(clean_clause)
+        if act:
+            return f"требований {act_genitive(act)}"
+        return ""
+
     def decision_points(self) -> list:
         """Постановляющая часть. Если ИИ не дал пунктов — собираем по Уставу."""
         points = [p for p in (self.points or []) if _clean(p)]
@@ -564,9 +604,7 @@ class Postanovlenie:
                 "Ответственность за доведение настоящего постановления до сотрудника, а также "
                 "контроль за исполнением настоящего документа оставляю за собой.",
             ]
-        act = self.get("violation_act")
-        clause = clause_genitive(normalize_clause(self.get("violation_clause"), act))
-        reference = " ".join(x for x in (clause, act) if x)
+        reference = self._violation_phrase()
         because = f", в связи с нарушением {reference}" if reference else ""
         penalty = penalty_instrumental(self.get("penalty"))
         # Конкретный вид взыскания обязателен: «в виде дисциплинарного
@@ -700,9 +738,11 @@ class Postanovlenie:
         («в части касающейся»), если ИИ их указал в «Нормативном основании».
         """
         parts = []
-        clause = normalize_clause(self.get("violation_clause"), self.get("violation_act"))
+        raw_clause = self.get("violation_clause")
+        clause = ("" if is_vague_clause(raw_clause)
+                  else normalize_clause(raw_clause, self.get("violation_act")))
         if clause and self.get("violation_act"):
-            parts.append(f"{clause} {self.get('violation_act')}".strip())
+            parts.append(f"{clause} {act_genitive(self.get('violation_act'))}".strip())
         elif clause:
             parts.append(clause)
         elif self.get("violation_act"):
@@ -844,11 +884,60 @@ _UI_NOISE = re.compile(
     r"|all items removed from input context"
     r"|режим ии обрабатывает"
     r"|^(pdf|file|файл|txt|png|docx)$"
-    r"|^[\w\- ]{1,40}\.(pdf|txt|png|docx|json)$"
+    r"|^[^:]{1,80}\.(pdf|txt|png|jpe?g|docx|doc|json)$"
     r"|^шаблон\.txt$"
     r"|^показать больше$|^копировать$|^поделиться$|^нравится$)",
     re.IGNORECASE,
 )
+
+
+#: Служебные фразы нашего же сообщения в чате (v37).
+#:
+#: Реальная ситуация: веб-клиент ИИ отдал в ответе ВЕСЬ текст чата, включая
+#: наше сообщение «Сформировано постановление… НИ В КАКОМ РАЗДЕЛЕ не
+#: используй внеигровые термины: «IC», «OOC»…». Этот текст ушёл в
+#: «Обстоятельства» документа и в PNG, а проверка справедливо нашла там «IC».
+#: Теперь строки-инструкции не считаются содержанием документа.
+_CHAT_INSTRUCTION = re.compile(
+    r"(сформировано постановление, файл заявки приложен"
+    r"|работай только с текстом заявки"
+    r"|не описывай изображения и вложения"
+    r"|ответь строго по формату промта"
+    r"|ни в каком разделе .{0,40}не используй внеигровые"
+    r"|вместо «?без весомых ic причин»?"
+    r"|вы отправили \d+ файл"
+    r"|ответ в режиме ии, исходные файлы"
+    r"|исходный запрос:"
+    r"|прикрепил|приложен файл заявки)",
+    re.IGNORECASE,
+)
+
+#: Строка целиком — служебная инструкция (начинается с повелительного глагола).
+_CHAT_INSTRUCTION_START = re.compile(
+    r"^(работай|ответь|не описывай|не разбирай|не пиши|используй|укажи|"
+    r"перепиши|сформируй|подготовь|выбери|составь|выведи)\b",
+    re.IGNORECASE,
+)
+
+
+def is_chat_instruction(line: str) -> bool:
+    """Строка — инструкция из нашего сообщения в чате, а не текст документа."""
+    text = _clean(line)
+    if not text:
+        return False
+    if _CHAT_INSTRUCTION.search(text):
+        return True
+    return bool(_CHAT_INSTRUCTION_START.match(text))
+
+
+def scrub_chat_text(text: str) -> str:
+    """Убирает из ответа ИИ служебные строки чата (v37)."""
+    kept = []
+    for line in str(text or "").splitlines():
+        if is_chat_instruction(line):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
 
 
 def is_ui_noise(line: str) -> bool:
@@ -858,7 +947,22 @@ def is_ui_noise(line: str) -> bool:
         return True
     if len(text) <= 2:
         return True
-    return bool(_UI_NOISE.search(text))
+    if is_chat_instruction(text):
+        return True
+    # v37: сначала явные признаки интерфейса («PDF», «File», «Заявка.txt») —
+    # раньше проверка обрывков имени вложения срабатывала раньше и отвечала
+    # «не мусор», из-за чего эти строки попадали в «Обстоятельства».
+    if _UI_NOISE.search(text):
+        return True
+    # «Ша / блон.txt» — перенос имени вложения, «Мем / фис.pdf» и т. п.
+    if re.fullmatch(r"[А-Яа-яЁёA-Za-z]{1,6}", text) and len(text) <= 6:
+        return bool(re.search(r"[а-яё]{2,}", text)) and _looks_like_fragment(text)
+    return False
+
+
+def _looks_like_fragment(text: str) -> bool:
+    """Короткий обрывок без пробелов рядом с именем файла — мусор чата."""
+    return text.lower() in {"ша", "мем", "блон", "фи", "фис", "чат", "заяв", "заявк"}
 
 
 _MD_WRAP = re.compile(r"^[\s>*_`#>\-•·\d.)\]]+")
@@ -1087,6 +1191,8 @@ def extract_document_block(text: str) -> str:
     # до ===КОНЕЦ ПОСТАНОВЛЕНИЯ===…»). Такой текст блоком не считается.
     if not looks_like_document(raw):
         return ""
+    # v37: в ответ может попасть весь чат вместе с нашими инструкциями
+    raw = scrub_chat_text(raw)
     upper = raw.upper()
     start = -1
     for marker in (TRIGGER_DOC_START, "===ПОСТАНОВЛЕНИЕ=="):
@@ -1137,6 +1243,8 @@ def parse_ai_answer(answer_text: str, base: Postanovlenie | None = None) -> Post
         diag_event("postanovlenie.answer_is_image_description")
         return None
 
+    text = scrub_chat_text(text)
+
     doc = Postanovlenie.from_dict((base or Postanovlenie()).to_dict())
     doc.source = "ai"
     doc.created_at = time.time()
@@ -1154,10 +1262,32 @@ def parse_ai_answer(answer_text: str, base: Postanovlenie | None = None) -> Post
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
-        if not line or is_ui_noise(line) or is_section_heading(line):
+        if not line:
+            continue
+        # v37: «Постановляющая часть:» — это рубрика резолюции, но
+        # is_section_heading() принимала её за заголовок описания картинки и
+        # выбрасывала строку. Из-за этого in_points не включался, и все пункты
+        # приказа уезжали в «Обстоятельства» (выгрузка LSCSD-IAD-1).
+        heading_plain = strip_markdown(line)
+        heading_key = heading_plain.split(":", 1)[0].strip(" .").lower()
+        if heading_key.startswith(("постановляющая", "резолютивная", "постановил",
+                                   "решил")):
+            in_points = True
+            rest = heading_plain.split(":", 1)[1].strip() if ":" in heading_plain else ""
+            for chunk in re.split(r"(?:^|\s)(?=\d{1,2}[.)]\s)", rest):
+                body = strip_markdown(re.sub(r"^\d{1,2}[.)]\s*", "", chunk.strip()))
+                if body:
+                    points.append(body)
+                    saw_content = True
+            continue
+        if is_ui_noise(line) or is_section_heading(line):
             continue
         compact = re.sub(r"[\s=*/\-_]+", "", line.upper())
-        if "ПОСТАНОВЛЕНИЕ" in compact and compact.startswith("ПОСТАНОВЛЕНИЕ"):
+        # v37: маркер — это строка «ПОСТАНОВЛЕНИЕ» целиком. Раньше под условие
+        # попадало любое начало с этого слова, и поле «Постановление вынес:
+        # Marcus Nomad» съедалось как маркер — в документе не было подписанта.
+        if (compact.startswith("ПОСТАНОВЛЕНИЕ") and ":" not in line
+                and len(compact) <= len("ПОСТАНОВЛЕНИЕ") + 6):
             inside = True
             saw_marker = True
             continue
@@ -1186,6 +1316,12 @@ def parse_ai_answer(answer_text: str, base: Postanovlenie | None = None) -> Post
                             saw_content = True
                 continue
             if key and value:
+                # v37: в значение мог попасть весь чат вместе с инструкцией
+                value = "\n".join(
+                    chunk for chunk in scrub_chat_text(value).splitlines()
+                    if not is_ui_noise(chunk)).strip()
+                if not value:
+                    continue
                 doc.set(key, value)
                 if key not in ("doc_number", "doc_date"):
                     saw_content = True
@@ -1441,6 +1577,18 @@ def sanitize_ooc(text: str) -> str:
     return result.strip()
 
 
+def leaked_chat_text(doc) -> str:
+    """Возвращает служебную строку чата, попавшую в текст документа (v37)."""
+    for label, value in (("Обстоятельства", doc.get("situation")),
+                         ("Постановляющая часть", " ".join(getattr(doc, "points", []) or [])),
+                         ("Нормативное основание", doc.get("legal_basis")),
+                         ("Дополнительно", doc.get("extra"))):
+        for line in str(value or "").splitlines():
+            if is_chat_instruction(line):
+                return f"{label}: «{line.strip()[:120]}…»"
+    return ""
+
+
 def check_ooc(doc: "Postanovlenie") -> list:
     """Замечания «в документе внеигровая лексика» (v36)."""
     issues: list = []
@@ -1512,10 +1660,43 @@ def check_document(doc: "Postanovlenie", regulation=None) -> list:
             "(3 строгих выговора или несдача переаттестации). Укажите это "
             "основание или уберите чёрный список.")
 
-    # 5. Внеигровая лексика (IC/OOC) — промт 1.19 п. 19.
+    # 5. Взыскание с «дополнительными» словами, которых нет в уставе (v37).
+    #    В выгрузке было «устный выговор с занесением в личное дело» — устав
+    #    такого вида взыскания не знает (п. 4.1), есть только устный выговор.
+    extra_penalty = re.search(r"с\s+занесением\s+в\s+личное\s+дело",
+                              " ".join([str(doc.get("penalty"))]
+                                       + list(doc.decision_points())).lower())
+    if extra_penalty:
+        issues.append(
+            "Взыскание указано с добавлением «с занесением в личное дело», "
+            "а устав (п. 4.1) такого вида не предусматривает: есть только "
+            "устный выговор и строгий выговор. Оставьте формулировку устава.")
+
+    # 6. Пункт устава — заглушка вместо номера.
+    if clause and is_vague_clause(clause):
+        issues.append(
+            "Нарушенный пункт устава не указан («по обстоятельствам, указанным "
+            "в заявке»). Постановление должно ссылаться на конкретный пункт "
+            "главы VIII — иначе взыскание назначено без состава проступка.")
+
+    # 7. Кодекс этики — это п. 8.6 устава, а не отдельный акт.
+    if "этическ" in basis.lower() and not re.search(r"\b8\.6\b", str(clause)):
+        issues.append(
+            "Кодекс этики и служебного поведения — это пункт 8.6 Устава LSCSD. "
+            "Ссылку «Этический кодекс штата» замените на «пункт 8.6 "
+            "Устава Los Santos County Sheriff Department».")
+
+    # 8. Служебный текст чата попал в документ (v37).
+    leaked = leaked_chat_text(doc)
+    if leaked:
+        issues.append(
+            "В текст документа попала служебная инструкция из чата: " + leaked +
+            " Её нужно удалить — в постановлении должен быть только текст решения.")
+
+    # 9. Внеигровая лексика (IC/OOC) — промт 1.19 п. 19.
     issues.extend(check_ooc(doc))
 
-    # 6. Пункты устава, которые не найдены в базе.
+    # 10. Пункты устава, которые не найдены в базе.
     if regulation is not None and clause:
         for number in _clause_numbers(clause):
             found = any(str(text).strip().startswith(number)

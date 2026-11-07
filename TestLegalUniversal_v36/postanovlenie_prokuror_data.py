@@ -26,10 +26,83 @@ from pathlib import Path
 
 import postanovlenie_data as base
 from postanovlenie_data import (
-    _clean, diag_event, extract_document_block, has_answer_end, initials_signature,
-    is_own_request, is_section_heading, is_ui_noise, normalize_clause,
+    _clean, act_genitive, clause_genitive, diag_event, extract_document_block,
+    has_answer_end, initials_signature, is_own_request, is_section_heading,
+    is_ui_noise, is_vague_clause, normalize_clause, scrub_chat_text,
     split_subject, strip_markdown, today_ru, _BULLET, _NUMBERED,
 )
+
+#: Значения-заглушки: ИИ подставляет их, когда данных нет (v37).
+_GOV_PLACEHOLDER = re.compile(
+    r"(по\s+обстоятельствам,?\s+указанным\s+в\s+заявке|"
+    r"согласно\s+обстоятельствам,?\s+указанным\s+в\s+заявке|"
+    r"по\s+указанным\s+обстоятельствам|"
+    r"на\s+основании\s+обстоятельств,?\s+указанных\s+в\s+заявке|"
+    r"в\s+ходе\s+служебной\s+деятельности|"
+    r"в\s+процессе\s+служебной\s+деятельности|"
+    r"не\s+установлен[оаы]?|нет\s+данных|"
+    r"информация\s+отсутствует|данные\s+отсутствуют)",
+    re.IGNORECASE,
+)
+
+
+#: «Место события»-заглушки: это описание процесса, а не адрес.
+_NOT_A_PLACE = re.compile(
+    r"(в\s+ходе|в\s+процессе|в\s+результате|при\s+исполнении|"
+    r"служебн\w*\s+деятельност|служебн\w*\s+обязанност)",
+    re.IGNORECASE,
+)
+
+
+def is_placeholder(value: str) -> bool:
+    """Значение — заглушка ИИ («по обстоятельствам, указанным в заявке»)."""
+    text = _clean(value)
+    if not text:
+        return True
+    return bool(_GOV_PLACEHOLDER.match(text.strip(" .,;")))
+
+
+def is_place_placeholder(value: str) -> bool:
+    """«Место события: в ходе служебной деятельности» — заглушка, не адрес."""
+    text = _clean(value)
+    if not text or is_placeholder(text):
+        return True
+    return bool(_NOT_A_PLACE.search(text))
+
+
+def strip_placeholder_clauses(text: str) -> str:
+    """Выбрасывает из абзаца фразы-заглушки (v37).
+
+    Реальная выгрузка AG-2: «УСТАНОВИЛ» начинался со строки «Место события:
+    в ходе служебной деятельности на территории штата Сан-Андреас», хотя
+    место события в деле не установлено. Такие фразы — не факт, а заполнитель.
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return ""
+    cleaned: list = []
+    for chunk in re.split(r"(?<=[.!?])\s+|\n+", raw):
+        body = chunk.strip()
+        if not body:
+            continue
+        if re.match(r"^место события\s*:", body, re.IGNORECASE) and is_place_placeholder(
+                re.sub(r"^место события\s*:\s*", "", body, flags=re.IGNORECASE)):
+            continue
+        if is_chat_junk(body):
+            continue
+        cleaned.append(body)
+    return " ".join(cleaned).strip()
+
+
+def drop_placeholders(doc) -> None:
+    """Чистит поля постановления от заглушек, чтобы они не попали в текст."""
+    for key in ("violation_act", "violation_clause", "event_place",
+                "event_date", "legal_basis", "penalty", "evidence", "extra"):
+        value = doc.get(key)
+        if value and is_placeholder(value):
+            diag_event("gov.placeholder_dropped", field=key, value=str(value)[:60])
+            doc.set(key, "")
+
 
 #: Шапка бланка прокуратуры.
 GOV_VEDOMSTVO = "STATE OF SAN-ANDREAS"
@@ -177,6 +250,141 @@ GOV_ALIASES: dict = {
 }
 
 
+#: Пункты формы обращения в ОГП (Регламент подачи обращений, ст. 6–7).
+APPEAL_POINTS: tuple[tuple[str, str], ...] = (
+    ("данные о заявителе", "applicant_name"),
+    ("данные о представителе заявителя", "applicant_representative"),
+    ("предмет обращения", "appeal_subject"),
+    ("сведения о нарушителе", "violator"),
+    ("дата и время события", "event_date"),
+    ("подробное описание ситуации", "description"),
+    ("ксерокопия идентификационной карты", "id_copy"),
+    ("электронную почту и номер телефона", "contacts"),
+    ("доказательства правонарушения", "evidence"),
+    ("копия договора о представлении интересов", "contract"),
+    ("документ, подтверждающий полномочия представителя", "authority"),
+    ("дата подачи заявления", "filed_date"),
+    ("подпись и расшифровка заявителя", "signature"),
+)
+
+
+def parse_appeal_text(raw: str) -> dict:
+    """Разбирает текст обращения гражданина по пунктам формы ОГП (v37).
+
+    Реальная ситуация: пользователь вставил в «Обстоятельства» ВСЁ обращение
+    целиком — с «От:», «В:», нумерацией, почтой и подписью. В постановление
+    этот текст уходил дословно, а в «УСТАНОВИЛ» появлялась строка
+    «Место события: в ходе служебной деятельности». Теперь обращение
+    разбирается на реквизиты, а обстоятельствами становится только описание
+    ситуации (п. 5).
+    """
+    text = str(raw or "").replace("\r\n", "\n")
+    result: dict = {}
+    if not text.strip():
+        return result
+
+    buffer: dict = {}
+    current = ""
+
+    def flush(key: str) -> None:
+        if not key:
+            return
+        value = " ".join(x.strip() for x in buffer.get(key, []) if x.strip())
+        value = re.sub(r"\s{2,}", " ", value).strip(" ;,")
+        if value and not result.get(key):
+            result[key] = value
+
+    for line in text.splitlines():
+        clean = line.strip()
+        if not clean:
+            if current:
+                buffer.setdefault(current, []).append("")
+            continue
+        # «От: Kirito Gold 178393» и «1.2 …» — не пункты формы обращения, а
+        # нумерация списка; «От:» вообще не реквизит и разбор не открывает.
+        if re.match(r"^(от|в|кому|куда)\s*:", clean, re.IGNORECASE):
+            continue
+        stripped = re.sub(r"^(?:\d{1,2}\.\d{1,2}|\d{1,2})[.)]?\s*", "", clean)
+        low = stripped.lower()
+        matched = ""
+        for prefix, key in APPEAL_POINTS:
+            if low.startswith(prefix):
+                matched = key
+                rest = stripped[len(prefix):].lstrip(" :—-")
+                flush(current)
+                current = key
+                buffer.setdefault(key, [])
+                if rest:
+                    buffer[key].append(rest)
+                break
+        if matched:
+            continue
+        if current:
+            buffer.setdefault(current, []).append(clean)
+    flush(current)
+
+    # «5. Подробное описание ситуации:» мог быть пуст — тогда в поле попал
+    # следующий реквизит. Такой «пересказ» описанием ситуации не считается.
+    description = result.get("description", "")
+    if description.lower().startswith(("подпись", "дата подачи", "доказательства",
+                                      "ксерокопия", "электронную почту")):
+        result.pop("description", None)
+
+    # «Kirito Gold 178393» -> ФИО + ID
+    applicant = result.get("applicant_name", "")
+    name, ident = split_subject(applicant, "")
+    if name:
+        result["applicant_name"] = name
+    if ident:
+        result["applicant_id"] = ident
+
+    # «Todd Spencer 181956: FIB» -> ФИО, номер, организация
+    violator = result.get("violator", "")
+    if violator:
+        head = re.split(r"[:;,]", violator, maxsplit=1)[0].strip()
+        tail = violator[len(head):].lstrip(" :;,—-")
+        vname, vid = split_subject(head, "")
+        result["violator"] = vname or head
+        if vid:
+            result["violator_id"] = vid
+        if tail:
+            result["violator_department"] = tail.strip(" ;,:—-")
+
+    return result
+
+
+_APPEAL_FORM_MARKS = (
+    "предмет обращения", "сведения о нарушителе", "данные о заявителе",
+    "подробное описание ситуации", "дата подачи заявления",
+    "подпись и расшифровка заявителя",
+)
+
+
+#: Строка-реквизит формы обращения: «5. Подробное описание ситуации: …».
+_APPEAL_FORM_LINE = re.compile(
+    r"^\s*(?:\d{1,2}[.)]?\s*)?(?:"
+    + "|".join(re.escape(mark) for mark in _APPEAL_FORM_MARKS)
+    + r")\s*:",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def looks_like_appeal_form(text: str) -> bool:
+    """Текст — бланк обращения гражданина в ОГП, а не описание ситуации.
+
+    Считаем не упоминания слов, а строки-реквизиты: официальный пересказ
+    («предмет обращения соответствует установленным категориям») бланком
+    не считается, а «1. Данные о заявителе: …» — считается.
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return False
+    if len(_APPEAL_FORM_LINE.findall(raw)) >= 2:
+        return True
+    low = raw.lower()
+    return sum(1 for mark in _APPEAL_FORM_MARKS if f"{mark}:" in low) >= 3
+
+
 def _covered(fragment: str, text: str, threshold: float = 0.6) -> bool:
     """Похоже ли, что `fragment` уже упомянут в `text`.
 
@@ -204,6 +412,81 @@ def _normalize_gov_key(raw: str) -> str:
         if key == label.lower():
             return field_key
     return ""
+
+
+_SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+def _key(text: str) -> str:
+    """Нормализованный ключ предложения для поиска дублей."""
+    return re.sub(r"[^\wА-Яа-яЁё]+", " ", str(text or "").lower()).strip()
+
+
+def sentences(text: str) -> list:
+    """Делит текст на законченные предложения (для склейки без повторов)."""
+    parts = [p.strip() for p in _SENT_SPLIT.split(str(text or "").strip()) if p.strip()]
+    return parts
+
+
+#: Строки интерфейса веб-чата, которые ИИ копирует в ответ (v37).
+_CHAT_JUNK = re.compile(
+    r"^(pdf|file|docx?|txt|png|jpe?g|image|изображение|вложение|"
+    r"файл(ы)? приложен\w*|вы отправили \d+|ответ в режиме ии.*|"
+    r"чат в режиме ии:?.*)$",
+    re.IGNORECASE,
+)
+
+
+def is_chat_junk(line: str) -> bool:
+    """Строка — элемент интерфейса чата, а не текст документа."""
+    text = strip_markdown(str(line or "")).strip(" .:;«»\"'")
+    if not text:
+        return True
+    if _CHAT_JUNK.match(text):
+        return True
+    # «Заявка (отправлено в чат).txt», «scan_1234.pdf»
+    if re.search(r"\.(pdf|docx?|txt|png|jpe?g)$", text, re.IGNORECASE):
+        return True
+    return False
+
+
+#: Эхо собственного документа: веб-клиент вернул отправленный текст вместе
+#: с ответом, и шапка/вводная часть попадали в «Обстоятельства» (v37).
+_GOV_ECHO = re.compile(
+    r"^(state of san-andreas|office of the attorney general|"
+    r"я,\s*прокурор|г\.\s*лос-сантос|постановление\s*№)",
+    re.IGNORECASE,
+)
+
+
+def is_gov_echo(line: str) -> bool:
+    """Строка — повтор шапки/вводной части документа, а не факт дела."""
+    return bool(_GOV_ECHO.match(strip_markdown(str(line or "")).strip(" .:;")))
+
+
+def append_unique(parts: list, text: str) -> None:
+    """Добавляет предложения, которых ещё нет в `parts`.
+
+    В выгрузке AG-2 «УСТАНОВИЛ» дважды повторял место события и один и тот же
+    вывод: строки-поля ИИ склеивались с абзацем обстоятельств подряд.
+    """
+    known = _key(" ".join(parts))
+    for sentence in sentences(scrub_chat_text(text)):
+        body = sentence.strip(" ;,")
+        if not body or is_chat_junk(body) or is_gov_echo(body):
+            continue
+        if is_placeholder(body) or _GOV_PLACEHOLDER.match(body):
+            continue
+        # «…образуют нарушение: по обстоятельствам, указанным в заявке» —
+        # заглушка может быть и в середине предложения
+        if re.search(r"(образуют нарушение|квалификац\w+)[:;]?\s*"
+                     r"(по обстоятельствам|согласно обстоятельствам)", body, re.IGNORECASE):
+            continue
+        key = _key(body)
+        if key and key in known:
+            continue
+        parts.append(body)
+        known = (known + " " + key).strip()
 
 
 @dataclass
@@ -318,34 +601,50 @@ class PostanovlenieProkurora:
 
     def facts_text(self) -> str:
         """«УСТАНОВИЛ» — фактические обстоятельства дела."""
-        parts = []
-        if self.get("situation"):
-            parts.append(self.get("situation"))
-        established = self.get("established")
-        if established and established not in (self.get("situation") or ""):
-            parts.append(established)
-        # Дату и место добавляем, только если их НЕТ в тексте обстоятельств,
-        # иначе в «УСТАНОВИЛ» одно и то же повторялось дважды.
-        situation_low = (self.get("situation") or "").lower()
+        parts: list = []
+        # v37: если в «Обстоятельства» вставили бланк обращения — берём из него
+        # только описание ситуации; остальные реквизиты уже в своих полях.
+        situation = strip_placeholder_clauses(scrub_chat_text(self.get("situation")))
+        if looks_like_appeal_form(situation):
+            # В «Обстоятельства» вставили бланк обращения целиком — в документ
+            # идёт только пункт «Подробное описание ситуации», остальные
+            # реквизиты уже разложены по полям (v37).
+            situation = parse_appeal_text(situation).get("description", "")
+        append_unique(parts, situation)
+        append_unique(parts, strip_placeholder_clauses(self.get("established")))
+
+        joined = " ".join(parts).lower()
         when = self.get("event_date")
         place = self.get("event_place")
+        if is_place_placeholder(place):
+            place = ""
         date_part = ""
         m = re.match(r"\s*(\d{1,2}\.\d{1,2}\.\d{2,4})", when or "")
         if m:
             date_part = m.group(1)
-        need_when = bool(when) and when.lower() not in situation_low \
-            and (not date_part or date_part not in situation_low)
-        need_place = bool(place) and not _covered(place, situation_low)
+        need_when = bool(when) and when.lower() not in joined \
+            and (not date_part or date_part not in joined)
+        need_place = bool(place) and not _covered(place, joined)
+        # «в ходе служебной деятельности» — не место события, а описание
+        # процесса: такие заглушки выбрасываем ещё до вставки в текст.
         if need_when and need_place:
             parts.insert(0, f"Событие имело место: {when}, место — {place}.")
         elif need_when:
             parts.insert(0, f"Событие имело место: {when}.")
         elif need_place:
             parts.insert(0, f"Место события: {place}.")
-        if self.get("violation_clause") or self.get("violation_act"):
-            act = " ".join(x for x in (self.get("violation_clause"),
-                                       self.get("violation_act")) if x).strip()
-            parts.append(f"Указанные обстоятельства образуют нарушение: {act}.")
+
+        # «Указанные обстоятельства образуют нарушение: по обстоятельствам,
+        # указанным в заявке» — заглушка, в документе её печатать нельзя.
+        clause = "" if is_vague_clause(self.get("violation_clause")) \
+            else self.get("violation_clause")
+        act = self.get("violation_act")
+        if clause or act:
+            phrase = " ".join(x for x in (clause_genitive(clause) if clause else "",
+                                          act_genitive(act) if act else "") if x)
+            if phrase:
+                parts.append(f"Указанные обстоятельства образуют нарушение: {phrase}.")
+
         evidence = self.get("evidence")
         if evidence:
             # тайм-коды/номера сравниваем отдельно: «05:01» в тексте уже есть,
@@ -396,8 +695,8 @@ class PostanovlenieProkurora:
             if self.get("penalty"):
                 points.append(f"Назначить наказание: {self.get('penalty')}.")
             points.append("Настоящее постановление вступает в законную силу с "
-                          "момента подписания и публикации и может быть "
-                          "обжаловано в течение 72 часов.")
+                          "момента подписания и публикации.")
+            points.append(self.appeal_point())
             return points
         if "уголовное дело" in low or "передаче материалов" in low:
             points.append("Возбудить уголовное производство по изложенным "
@@ -435,9 +734,8 @@ class PostanovlenieProkurora:
         points.append("Уведомить заявителя о принятом решении.")
         points.append("Настоящее постановление вступает в законную силу с момента "
                       "его подписания и публикации на официальном портале штата "
-                      "Сан-Андреас и может быть обжаловано вышестоящему прокурору "
-                      "либо в суд в срок, не превышающий 72 часа (статьи 27–28 "
-                      "Регламента подачи обращений).")
+                      "Сан-Андреас.")
+        points.append(self.appeal_point())
         return points
 
     def basis_text(self) -> str:
@@ -549,6 +847,43 @@ class PostanovlenieProkurora:
 #  Разбор ответа ИИ
 # --------------------------------------------------------------------------- #
 
+#: Строки подписи в конце резолюции. ИИ нумерует их как пункты
+#: («6. Прокурор штата…», «7. J. Raine»), и они попадали в резолюцию.
+_GOV_SIGNATURE = re.compile(
+    r"^(прокурор(\s+штата)?|подпись|должность|удостоверение|"
+    r"[А-ЯЁA-Z]\.\s?[А-ЯЁA-Z][а-яёa-z]+$|"
+    r"[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+$|"
+    r"(?:г\.\s*)?[А-ЯЁ][а-яё-]+(?:-[А-ЯЁ][а-яё-]+)?,\s*\d{2}\.\d{2}\.\d{4})",
+)
+
+
+def is_signature_line(line: str) -> bool:
+    """Строка — элемент подписи (должность, ФИО, удостоверение), не пункт."""
+    text = strip_markdown(str(line or "")).strip(" .;,")
+    if not text:
+        return False
+    low = text.lower()
+    if "удостоверение" in low or low.startswith(("подпись", "должность")):
+        return True
+    if low.startswith("прокурор") and "постановил" not in low:
+        return True
+    # «И. Рейн», «Jonathan Raine» — ФИО из 2–3 слов без глаголов приказа.
+    words = text.split()
+    if len(words) <= 3 and not re.search(r"\b(назначить|принять|возбудить|обязать|"
+                                         r"отказать|направить|уведомить|прекратить)\b",
+                                         low):
+        return bool(re.fullmatch(r"(?:[А-ЯЁA-Z]\.?\s?)?(?:[А-ЯЁA-Z][а-яёa-z-]+\.?"
+                                 r"(?:\s+[А-ЯЁA-Z][а-яёa-z-]+\.?){0,2}|"
+                                 r"[А-ЯЁA-Z]\.\s?[А-ЯЁA-Z]\.(?:\s?[А-ЯЁA-Z]\.)?)", text))
+    return False
+
+
+def strip_signature_points(points: list) -> list:
+    """Убирает пункты-подписи из резолюции (v37)."""
+    kept = [p for p in points or [] if p and not is_signature_line(p)]
+    return kept
+
+
 def parse_gov_answer(answer_text: str, base_doc: PostanovlenieProkurora | None = None, base=None):
     base_doc = base_doc or base
     """Достаёт постановление Прокурора из ответа ИИ.
@@ -582,6 +917,8 @@ def parse_gov_answer(answer_text: str, base_doc: PostanovlenieProkurora | None =
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or is_ui_noise(line) or is_section_heading(line):
+            continue
+        if is_chat_junk(line) or is_gov_echo(line):
             continue
         compact = re.sub(r"[\s=*/\-_]+", "", line.upper())
         if "ПОСТАНОВЛЕНИЕ" in compact and compact.startswith("ПОСТАНОВЛЕНИЕ"):
@@ -650,7 +987,7 @@ def parse_gov_answer(answer_text: str, base_doc: PostanovlenieProkurora | None =
                 saw_content = True
 
     if points:
-        doc.points = points
+        doc.points = strip_signature_points(points)
     if facts_lines:
         # Раздел «УСТАНОВИЛ» — это выводы прокурора, а не «Обстоятельства»:
         # раньше он приклеивался к обстоятельствам и печатался дважды.
@@ -662,6 +999,22 @@ def parse_gov_answer(answer_text: str, base_doc: PostanovlenieProkurora | None =
         elif joined and joined not in doc.get("situation"):
             doc.situation = (doc.get("situation") + "\n" + joined).strip()
 
+    # v37: ответ ИИ не содержит поля «Постановление вынес …» — имя прокурора
+    # есть только в преамбуле «Я, Прокурор штата Сан-Андреас Jonathan Raine,
+    # удостоверение № 198632». Без этого проверка считала, что автор не указан.
+    if not doc.get("author_name"):
+        found = re.search(
+            r"Я,\s*(?:заместитель\s+)?(?:генерального\s+)?прокурор\w*[^,]{0,40}?"
+            r"\s([А-ЯЁA-Z][а-яёa-z]+(?:\s+[А-ЯЁA-Z][а-яёa-z]+){1,2})\s*,",
+            text, re.IGNORECASE)
+        if found:
+            doc.author_name = found.group(1).strip()
+    if not doc.get("author_id"):
+        found_id = re.search(r"удостоверен\w*\s*№\s*(\d{3,10})", text, re.IGNORECASE)
+        if found_id:
+            doc.author_id = found_id.group(1)
+
+    drop_placeholders(doc)
     if not saw_marker and not (doc.get("applicant_name") or doc.points):
         return None
     if not saw_content:
@@ -760,6 +1113,57 @@ def check_gov_document(doc: PostanovlenieProkurora) -> list:
                       "по чьему обращению оно вынесено.")
     if not doc.get("appeal_date") and not doc.get("doc_date"):
         issues.append("Не указана дата обращения — нарушается вводная часть.")
+
+    # 7. Ссылка на материалы, которых в обращении нет (v37).
+    #    В выгрузке AG-2 «УСТАНОВИЛ» утверждал: «Изложенные факты и
+    #    прикрепленные к кадровым и юридическим договорам сведения
+    #    достаточны…», хотя таких документов в деле не было.
+    facts_low = doc.facts_text().lower()
+    sources_low = " ".join([doc.get("evidence"), doc.get("situation"),
+                            doc.get("extra")]).lower()
+    invented = [phrase for phrase in (
+        "кадровым и юридическим договорам", "кадровым договорам",
+        "юридическим договорам", "прикрепленные к договорам",
+        "материалами дела подтверждается", "согласно материалам дела")
+        if phrase in facts_low and not any(
+            word in sources_low for word in ("договор", "материал", "доказательств"))]
+    if invented:
+        issues.append(
+            "В «УСТАНОВИЛ» есть ссылка на документы, которых нет в обращении ("
+            + "; ".join(invented) + "). Опишите только те факты и материалы, "
+            "которые заявитель действительно приложил.")
+
+    # 8. Обжалование без ссылки на норму (ст. 27–28 Регламента).
+    resolution = " ".join(doc.decision_points()).lower()
+    has_norm = ("регламент" in resolution or "регламента" in resolution
+                or "статьи 27" in resolution or "статьями 27" in resolution
+                or "ст. 27" in resolution or "статей 27" in resolution)
+    if "обжалов" in resolution and not has_norm:
+        issues.append(
+            "Порядок обжалования указан без правовой нормы. По статьям 27–28 "
+            "Регламента подачи обращений решение обжалуется вышестоящему "
+            "прокурору или в суд в срок, не превышающий 72 часа, — сошлитесь "
+            "на эти статьи.")
+
+    # 9. Обращение без описания ситуации (v37). В выгрузке AG-2 пункт 5
+    #    «Подробное описание ситуации» был пуст, и ИИ дописал факты от себя
+    #    («прикрепленные к кадровым и юридическим договорам сведения»).
+    situation = doc.get("situation")
+    if looks_like_appeal_form(situation):
+        description = parse_appeal_text(situation).get("description", "")
+        if not description or description.lower().startswith("настоящим заверяю"):
+            issues.append(
+                "В обращении не заполнен пункт «Подробное описание ситуации» — "
+                "постановление опирается на факты, которых в обращении нет. "
+                "Попросите заявителя описать событие или укажите это как "
+                "основание для запроса дополнительных материалов.")
+
+    # 10. Заглушки вместо правовой оценки (v37).
+    if is_placeholder(doc.get("violation_clause")) and doc.get("violation_clause"):
+        issues.append(
+            "Нарушенная норма указана заглушкой («по обстоятельствам, указанным "
+            "в заявке»). Нужен конкретный пункт устава или статья закона — "
+            "иначе правовая оценка в постановлении отсутствует.")
 
     return issues
 
