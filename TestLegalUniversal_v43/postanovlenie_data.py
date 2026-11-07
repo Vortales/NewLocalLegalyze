@@ -1786,16 +1786,65 @@ def check_document(doc: "Postanovlenie", regulation=None) -> list:
 #  История сформированных постановлений
 # --------------------------------------------------------------------------- #
 
+#: Виды постановлений в истории (v41). Раньше и IAD, и Прокурор писали в одну
+#: папку `postanovleniya/`, из-за чего:
+#: * список истории перемешивался — в форме IAD показывались постановления
+#:   Прокурора, а «Загрузить в форму» падал (документ собирался моделью IAD);
+#: * нумерация была общей: создав IAD-постановление, прокурор получал номер
+#:   «вторым», хотя нумерация у ведомств своя (AG-1, LSCSD-IAD-1).
+HISTORY_KIND_IAD = "iad"
+HISTORY_KIND_GOV = "gov"
+
+
 class DocumentHistory:
     """История постановлений: JSON-файлы в папке `postanovleniya`.
 
     Требование задачи: «вызвать старое заполнение шаблона и внести правки».
     Поэтому каждая запись — полный снимок полей, а не только имя файла.
+
+    v41: у каждого вида постановлений СВОЯ папка и СВОЙ загрузчик:
+    `postanovleniya/history/iad/*.json` и `postanovleniya/history/gov/*.json`.
+    Старые записи из корня папки подхватываются только теми формами, чей
+    загрузчик может их разобрать.
     """
 
-    def __init__(self, folder: Path):
-        self.folder = Path(folder)
+    #: Вид истории по умолчанию. Подкласс перекрывает через `KIND` (v41).
+    KIND = HISTORY_KIND_IAD
+
+    def __init__(self, folder: Path, kind: str = ""):
+        # `kind` экземпляра не должен перебивать KIND подкласса: иначе
+        # GovHistory писал бы в папку IAD (ошибка ловилась тестами v41).
+        self.kind = kind or type(self).KIND
+        root = Path(folder)
+        # Новые записи — в подпапке вида; корень читаем только как «старые».
+        self.legacy_folder = root
+        self.folder = root / "history" / self.kind
         self.folder.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------ загрузчик
+
+    def _parse(self, data: dict):
+        """Собирает документ из снимка истории. Переопределяется в v41."""
+        return Postanovlenie.from_dict(data)
+
+    #: Поля, которые пишет только модель Прокурора (v41). Запись с ними —
+    #: постановление Прокурора, форме IAD она не показывается.
+    GOV_ONLY_KEYS = ("doc_stage", "prosecutor_facts", "appeal_raw",
+                     "prosecutor_rank", "appeal_subject")
+
+    def _belongs(self, data: dict) -> bool:
+        """Запись относится к этому виду истории (v41).
+
+        История IAD принимает всё, кроме постановлений Прокурора: они лежат в
+        своей папке, но старые записи могли остаться в корне. Без этой
+        проверки форма IAD собирала бы из них документ IAD.
+        """
+        if not isinstance(data, dict):
+            return False
+        # Признак только по полям: номер «AG-1» может стоять и в бланке IAD
+        # (так бывало в тестах и старых выгрузках), поля «вида решения» —
+        # только у Прокурора.
+        return not any(key in data for key in self.GOV_ONLY_KEYS)
 
     def _path(self, stamp: float) -> Path:
         name = datetime.fromtimestamp(stamp).strftime("%Y%m%d-%H%M%S")
@@ -1815,15 +1864,53 @@ class DocumentHistory:
         return path
 
     def items(self) -> list:
-        """Свежие записи первыми: [(path, dump, Postanovlenie)]."""
-        result = []
-        for path in sorted(self.folder.glob("*.json"), reverse=True):
+        """Свежие записи первыми: [(path, dump, документ)].
+
+        v41: читаются своя папка вида и (для совместимости) старый корень.
+        Одна и та же запись не показывается дважды: если снимок лежит и в
+        старом корне, и в подпапке вида (или сохранён дважды без изменений),
+        остаётся один — самый свежий файл.
+        """
+        seen: dict = {}
+        order: list = []
+        candidates = []
+        for path in sorted(self.folder.glob("*.json")):
+            candidates.append(path)
+        for path in sorted(self.legacy_folder.glob("*.json")):
+            # Корень остаётся «старым» хранилищем: подхватываем только то,
+            # что этот вид истории умеет разобрать.
+            candidates.append(path)
+        for path in candidates:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            result.append((path, data, Postanovlenie.from_dict(data)))
-        return result
+            if not isinstance(data, dict) or not self._belongs(data):
+                continue
+            try:
+                doc = self._parse(data)
+            except Exception:
+                continue
+            if doc is None:
+                continue
+            # Ключ — имя файла (без счётчика `-N`) плюс содержимое снимка.
+            # Так схлопываются только настоящие дубли: копия файла при
+            # переносе из старого корня в `history/<вид>/` и повторное
+            # сохранение того же снимка. Разные редакции одного документа
+            # остаются отдельными записями (v41).
+            key = (re.sub(r"-\d+$", "", path.stem),
+                   json.dumps(data, ensure_ascii=False, sort_keys=True))
+            old_path = seen.get(key)
+            if old_path is not None:
+                # Дубль: оставляем более свежий файл (по времени изменения).
+                try:
+                    if old_path.stat().st_mtime >= path.stat().st_mtime:
+                        continue
+                except Exception:
+                    continue
+            seen[key] = path
+            order.append((key, path, data, doc))
+        return [(path, data, doc) for _key, path, data, doc in order]
 
     def labels(self) -> list:
         labels = []
@@ -1835,9 +1922,22 @@ class DocumentHistory:
         return labels
 
     def used_numbers(self) -> list:
-        return [doc.get("doc_number") for _p, _d, doc in self.items() if doc.get("doc_number")]
+        """Номера этого вида постановлений (v41).
 
-    def load_index(self, index: int) -> Postanovlenie | None:
+        Замечание: «создаю постановление для IAD, и если делаю постановление
+        Прокурора следующим, то номер уже второй». Проверка идёт по своим
+        номерам: у Прокурора AG-1…, у IAD LSCSD-IAD-1…, они не пересекаются.
+        """
+        # Повторы допустимы (две редакции одного документа): `auto_number`
+        # берёт максимум, поэтому важен только состав своих номеров.
+        numbers = []
+        for _p, _d, doc in self.items():
+            number = doc.get("doc_number")
+            if number:
+                numbers.append(number)
+        return numbers
+
+    def load_index(self, index: int):
         items = self.items()
         if 0 <= index < len(items):
             return items[index][2]

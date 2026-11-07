@@ -10,6 +10,7 @@
 * PNG-рендер даёт A4 и умеет разбивать длинный документ на страницы.
 """
 
+import json
 import sys
 import tempfile
 import unittest
@@ -1362,7 +1363,13 @@ class V36ProkurorTests(unittest.TestCase):
     def test_clean_document_passes(self):
         for doc_type in self.g.GOV_DOC_TYPES:
             self.doc.doc_type = doc_type
+            self.doc.doc_stage = self.g.gov_stage(doc_type)
             self.doc.points = []
+            # v39: итоговое постановление о привлечении к ответственности
+            # обязано опираться на норму — иначе санкция без права. Для
+            # «чистого» документа норму и указываем.
+            self.doc.violation_clause = "статья 28 Этического кодекса"
+            self.doc.legal_basis = "статья 23 Регламента подачи обращений"
             issues = self.g.check_gov_document(self.doc)
             self.assertEqual(issues, [], f"{doc_type}: {issues}")
 
@@ -1959,9 +1966,12 @@ class V38ProkurorFormLayoutTests(unittest.TestCase):
         self.assertIn("WrapAtWordBoundaryOrAnywhere", self.src)
         self.assertIn("ScrollBarAlwaysOff", self.src)
 
-    def test_both_text_fields_use_wrapped_area(self):
+    def test_all_case_fields_use_wrapped_area(self):
+        """v42: обращение и четыре части обстоятельств — с переносом строк."""
         self.assertIn('self.texts["appeal_raw"] = self._text_area()', self.src)
-        self.assertIn('self.texts["situation"] = self._text_area(', self.src)
+        for key in ("facts_video", "facts_for", "facts_against", "proposal",
+                    "own_decision"):
+            self.assertIn(f'self.texts["{key}"] = self._text_area(', self.src)
 
     def test_no_unbounded_plain_text_edits(self):
         """Все текстовые поля формы создаются через `_text_area` (с переносом)."""
@@ -2057,7 +2067,9 @@ class V38BasisTests(unittest.TestCase):
             violation_act="Уголовный кодекс штата Сан-Андреас",
             violation_clause="часть 2 статьи 12.8, часть 2 статьи 15.1")
         basis = doc.basis_text()
-        self.assertIn("Уголовный кодекс штата Сан-Андреас", basis)
+        # v39: акт печатается в родительном падеже — «часть 2 статьи 12.8 …
+        # Уголовного кодекса штата Сан-Андреас».
+        self.assertIn("Уголовного кодекса штата Сан-Андреас", basis)
         self.assertIn("части 2 статьи 12.8", pdoc.clause_genitive(
             doc.get("violation_clause")))
 
@@ -2065,4 +2077,1313 @@ class V38BasisTests(unittest.TestCase):
         doc = gdata.PostanovlenieProkurora(
             violation_act="Уголовный кодекс штата Сан-Андреас",
             violation_clause="часть 2 статьи 12.8")
-        self.assertIn("Уголовный кодекс", doc.basis_text())
+        self.assertIn("Уголовного кодекса", doc.basis_text())
+
+
+class V39DocTypeTwoPartsTests(unittest.TestCase):
+    """v39: «Вид решения» = первичное решение + итоговая санкция."""
+
+    def setUp(self):
+        self.doc = gdata.PostanovlenieProkurora(
+            doc_number="AG-1", doc_date="07.11.2026",
+            author_name="Marcus Nomad", author_id="85028",
+            applicant_name="Kinder Himmars", applicant_id="54337",
+            appeal_date="06.11.2026")
+
+    # ── части списка ────────────────────────────────────────────────────
+    def test_primary_part_has_only_procedural_decisions(self):
+        for kind in gdata.GOV_PRIMARY_TYPES:
+            self.assertEqual(gdata.gov_stage(kind), gdata.GOV_STAGE_PRIMARY, kind)
+        self.assertIn("О принятии обращения к собственному производству",
+                      gdata.GOV_PRIMARY_TYPES)
+        self.assertIn("Об отказе в принятии обращения к рассмотрению",
+                      gdata.GOV_PRIMARY_TYPES)
+
+    def test_final_part_has_sanctions(self):
+        for kind in gdata.GOV_FINAL_TYPES:
+            self.assertEqual(gdata.gov_stage(kind), gdata.GOV_STAGE_FINAL, kind)
+        self.assertIn("О привлечении к административной ответственности",
+                      gdata.GOV_FINAL_TYPES)
+        self.assertIn("О возбуждении уголовного дела по обращению",
+                      gdata.GOV_FINAL_TYPES)
+
+    def test_refusal_in_merits_is_final_stage(self):
+        self.assertEqual(gdata.gov_stage("Об отказе в удовлетворении обращения"),
+                         gdata.GOV_STAGE_FINAL)
+
+    def test_stage_types_split(self):
+        self.assertEqual(gdata.stage_types(gdata.GOV_STAGE_PRIMARY),
+                         gdata.GOV_PRIMARY_TYPES)
+        self.assertEqual(gdata.stage_types(gdata.GOV_STAGE_FINAL),
+                         gdata.GOV_FINAL_TYPES)
+
+    def test_auto_value_is_not_a_concrete_type(self):
+        self.assertNotIn(gdata.GOV_DOC_TYPE_AUTO, gdata.GOV_DOC_TYPES)
+
+    # ── этап документа ──────────────────────────────────────────────────
+    def test_stage_derived_from_doc_type(self):
+        self.doc.doc_type = "О привлечении к административной ответственности"
+        self.assertTrue(self.doc.is_final())
+        self.doc.doc_type = "О переадресации обращения по подведомственности"
+        self.assertFalse(self.doc.is_final())
+
+    def test_explicit_stage_wins(self):
+        self.doc.doc_type = "О принятии обращения к собственному производству"
+        self.doc.doc_stage = gdata.GOV_STAGE_FINAL
+        self.assertEqual(self.doc.stage(), gdata.GOV_STAGE_FINAL)
+
+    # ── заявка для ИИ ───────────────────────────────────────────────────
+    def test_chat_request_states_stage_and_rules(self):
+        self.doc.doc_type = "О привлечении к административной ответственности"
+        self.doc.appeal_raw = "1. Данные о заявителе: Kinder Himmars 54337"
+        text = self.doc.to_chat_txt()
+        self.assertIn("Этап: 2.", text)
+        self.assertIn("ЭТАП 2", text)
+        self.assertIn("статье 23", text)
+
+    def test_primary_stage_forbids_sanctions(self):
+        self.doc.doc_type = "Об отказе в принятии обращения к рассмотрению"
+        self.doc.appeal_raw = "1. Данные о заявителе: Kinder Himmars 54337"
+        text = self.doc.to_chat_txt()
+        self.assertIn("ЭТАП 1", text)
+        self.assertIn("санкцию не", text.lower())
+        self.assertIn("статьи 16", text)
+
+    # ── нормализация вида решения из ответа ИИ ──────────────────────────
+    def test_free_form_type_is_normalized(self):
+        self.assertEqual(
+            gdata.normalize_gov_doc_type("Постановление об отказе в рассмотрении обращения"),
+            "Об отказе в принятии обращения к рассмотрению")
+        self.assertEqual(
+            gdata.normalize_gov_doc_type("отказ в удовлетворении обращения"),
+            "Об отказе в удовлетворении обращения")
+        self.assertEqual(
+            gdata.normalize_gov_doc_type("привлечение к административной ответственности"),
+            "О привлечении к административной ответственности")
+
+    def test_answer_marks_auto_type_by_merits(self):
+        base = gdata.PostanovlenieProkurora(doc_number="AG-3", doc_date="07.11.2026",
+                                            doc_type=gdata.GOV_DOC_TYPE_AUTO)
+        answer = ("===ПОСТАНОВЛЕНИЕ===\n"
+                  "Номер: AG-3\n"
+                  "Дата: 07.11.2026\n"
+                  "Заявитель: Kinder Himmars\n"
+                  "УСТАНОВИЛ:\n"
+                  "Сотрудник FIB допустил нарушение Этического кодекса.\n"
+                  "ПОСТАНОВИЛ:\n"
+                  "1. Признать сотрудника виновным и назначить штраф в размере "
+                  "30000 $.\n"
+                  "===КОНЕЦ ПОСТАНОВЛЕНИЯ===\n")
+        doc = gdata.parse_gov_answer(answer, base=base)
+        self.assertIsNotNone(doc)
+        self.assertEqual(doc.get("doc_type"),
+                         "О привлечении к административной ответственности")
+        self.assertTrue(doc.is_final())
+
+    # ── резолюция по этапам ─────────────────────────────────────────────
+    def test_merits_refusal_points(self):
+        self.doc.doc_type = "Об отказе в удовлетворении обращения"
+        self.doc.legal_basis = "пункт «б» части 1 статьи 23 Регламента"
+        points = " ".join(self.doc.decision_points())
+        self.assertIn("В удовлетворении обращения", points)
+        self.assertIn("недостаточности", points)
+        self.assertIn("обжаловано", points)
+        self.assertNotIn("Отказать в принятии обращения", points)
+
+    def test_redirect_points_name_the_body(self):
+        self.doc.doc_type = "О переадресации обращения по подведомственности"
+        self.doc.subject_department = "FIB"
+        points = " ".join(self.doc.decision_points())
+        self.assertIn("Intelligence Branch (IB)", points)
+
+    def test_completion_points(self):
+        self.doc.doc_type = ("О завершении проверки по обращению и передаче "
+                             "материалов в уголовное производство")
+        points = " ".join(self.doc.decision_points())
+        self.assertIn("Завершить проверку", points)
+        self.assertIn("уголовное производство", points)
+
+    # ── проверки по праву ───────────────────────────────────────────────
+    def test_check_flags_sanction_on_primary_stage(self):
+        self.doc.doc_type = "О принятии обращения к собственному производству"
+        self.doc.points = ["Назначить штраф в размере 30000 $."]
+        issues = gdata.check_gov_document(self.doc)
+        self.assertTrue(any("этап 1" in issue for issue in issues), issues)
+
+    def test_check_flags_merits_without_sanction(self):
+        self.doc.doc_type = "О привлечении к административной ответственности"
+        self.doc.points = ["Принять к рассмотрению обращение Kinder Himmars."]
+        issues = gdata.check_gov_document(self.doc)
+        self.assertTrue(any("итоговое" in issue.lower() for issue in issues), issues)
+
+    def test_check_flags_sanction_without_norm(self):
+        self.doc.doc_type = "О привлечении к административной ответственности"
+        self.doc.points = ["Признать виновным и назначить штраф в размере 30000 $."]
+        issues = gdata.check_gov_document(self.doc)
+        self.assertTrue(any("нормы" in issue for issue in issues), issues)
+
+    def test_sanction_with_norm_passes(self):
+        self.doc.doc_type = "О привлечении к административной ответственности"
+        self.doc.points = ["Признать виновным в нарушении статьи 28 Этического "
+                           "кодекса и назначить штраф в размере 30000 $.",
+                           "Настоящее постановление может быть обжаловано "
+                           "вышестоящему прокурору в срок 72 часа (статьи 27–28 "
+                           "Регламента)."]
+        self.doc.violation_clause = "статья 28 Этического кодекса"
+        issues = gdata.check_gov_document(self.doc)
+        self.assertFalse(any("нормы" in issue for issue in issues), issues)
+
+    # ── форма ───────────────────────────────────────────────────────────
+    def test_form_has_stage_selector_and_dependent_list(self):
+        src = Path("postanovlenie_prokuror_ui.py").read_text(encoding="utf-8")
+        self.assertIn("self.cb_stage", src)
+        self.assertIn("_on_stage_changed", src)
+        self.assertIn("GOV_STAGE_TITLES", src)
+        # v41: в форме два разных значения «определит ИИ» — через
+        # `auto_type_for()`/`type_choices()`, а не одно общее.
+        self.assertIn("auto_type_for", src)
+
+    def test_form_fills_types_by_stage(self):
+        src = Path("postanovlenie_prokuror_ui.py").read_text(encoding="utf-8")
+        block = src[src.index("def _fill_types"):]
+        block = block[:block.index("def _on_stage_changed")]
+        self.assertIn("type_choices(stage)", block)
+        self.assertNotIn("GOV_DOC_TYPE_AUTO", block)   # v41: только по этапу
+
+    def test_suggestion_prefers_criminal_over_court(self):
+        doc = gdata.PostanovlenieProkurora(
+            doc_stage=gdata.GOV_STAGE_FINAL,
+            doc_type=gdata.GOV_DOC_TYPE_AUTO,
+            situation="В действиях сотрудника усматриваются признаки "
+                      "преступления, предусмотренного статьёй 15.1 УК.")
+        self.assertEqual(gdata.suggest_doc_type(doc),
+                         "О возбуждении уголовного дела по обращению")
+
+    def test_suggestion_uses_penalty_field(self):
+        doc = gdata.PostanovlenieProkurora(
+            doc_stage=gdata.GOV_STAGE_FINAL, doc_type=gdata.GOV_DOC_TYPE_AUTO,
+            penalty="привлечь к административной ответственности, штраф в размере 30000 $")
+        self.assertEqual(gdata.suggest_doc_type(doc),
+                         "О привлечении к административной ответственности")
+
+    def test_suggestion_falls_back_to_refusal_without_evidence(self):
+        doc = gdata.PostanovlenieProkurora(
+            doc_stage=gdata.GOV_STAGE_FINAL, doc_type=gdata.GOV_DOC_TYPE_AUTO,
+            situation="Изложены обстоятельства дела.")
+        self.assertEqual(gdata.suggest_doc_type(doc),
+                         "Об отказе в удовлетворении обращения")
+
+    def test_auto_value_is_not_normalized_to_a_type(self):
+        self.assertEqual(gdata.normalize_gov_doc_type(gdata.GOV_DOC_TYPE_AUTO), "")
+
+
+class V39PaginationTests(unittest.TestCase):
+    """v39: текст не должен наезжать на колонтитул «стр. N из M»."""
+
+    def _render(self, doc):
+        import doc_render as render
+        assets = gdata.gov_assets(Path("."))
+        return render.render_document(doc, assets), render
+
+    def test_long_facts_break_across_pages(self):
+        doc = gdata.PostanovlenieProkurora(
+            doc_number="AG-9", doc_date="07.11.2026", author_name="M Nomad",
+            author_id="85028", applicant_name="Kinder Himmars",
+            doc_type="О принятии обращения к собственному производству",
+            situation=" ".join(f"Обстоятельство номер {i} установлено по "
+                               f"видеофиксации и подтверждено тайм-кодом 0{i % 10}:15."
+                               for i in range(1, 90)))
+        pages, render = self._render(doc)
+        self.assertGreaterEqual(len(pages), 2)
+        limit = render.PAGE_H - render.MARGIN_BOTTOM - 120
+        for page in pages:
+            bottom = getattr(page, "_text_bottom", 0)
+            self.assertLessEqual(bottom, limit + 60, "текст ушёл под колонтитул")
+
+    def test_paragraph_is_split_not_dropped(self):
+        doc = gdata.PostanovlenieProkurora(
+            doc_number="AG-10", doc_date="07.11.2026", author_name="M Nomad",
+            applicant_id="1", applicant_name="A B",
+            doc_type="О принятии обращения к собственному производству",
+            situation=" ".join(f"Фрагмент {i} описания события." for i in range(1, 220)))
+        pages, _render = self._render(doc)
+        text = doc.to_document_txt()
+        # последний фрагмент абзаца действительно попал в документ
+        self.assertIn("Фрагмент 219 описания события", text)
+        self.assertGreater(len(pages), 1)
+
+
+class V391AutoForPrimaryStageTests(unittest.TestCase):
+    """v39.1: «Определит ИИ» доступен и на первичном этапе."""
+
+    def setUp(self):
+        self.form = "1. Данные о заявителе: Mark Skywalker 152306\n" \
+                    "3. Сведения о нарушителе: Kyria Suspectzx 8332 FIB\n"
+
+    def _doc(self, description):
+        from postanovlenie_prokuror_data import PostanovlenieProkurora
+        return PostanovlenieProkurora(
+            doc_stage=gdata.GOV_STAGE_PRIMARY, doc_type=gdata.GOV_DOC_TYPE_AUTO,
+            appeal_raw=(self.form + f"5. Подробное описание ситуации: {description}\n"
+                        "Подпись и расшифровка заявителя: M.S"))
+
+    def test_auto_is_offered_on_both_stages(self):
+        """v43: «определит ИИ» есть на обоих этапах; по умолчанию — по обращению."""
+        src = Path("postanovlenie_prokuror_ui.py").read_text(encoding="utf-8")
+        block = src[src.index("def _fill_types"):]
+        block = block[:block.index("def _on_stage_changed")]
+        self.assertIn("gdata.type_choices(stage)", block)
+        for stage in (gdata.GOV_STAGE_PRIMARY, gdata.GOV_STAGE_FINAL):
+            choices = gdata.type_choices(stage)
+            self.assertEqual(choices[0], gdata.DEFAULT_DOC_TYPE)
+            self.assertIn(gdata.auto_type_for(stage), choices)
+
+    def test_auto_primary_accepts_well_formed_appeal(self):
+        self.assertEqual(gdata.suggest_doc_type(self._doc("Задержали без оснований.")),
+                         "О принятии обращения к собственному производству")
+
+    def test_auto_primary_refuses_without_description(self):
+        doc = self._doc("")
+        self.assertEqual(gdata.suggest_doc_type(doc),
+                         "Об отказе в принятии обращения к рассмотрению")
+
+    def test_auto_primary_stops_withdrawn_appeal(self):
+        self.assertEqual(
+            gdata.suggest_doc_type(self._doc("Прошу отозвать обращение.")),
+            "О прекращении производства по обращению")
+
+    def test_auto_primary_redirects_foreign_competence(self):
+        self.assertEqual(
+            gdata.suggest_doc_type(self._doc("Вопрос не относится к компетенции ОГП.")),
+            "О переадресации обращения по подведомственности")
+
+    def test_primary_suggestion_always_in_primary_part(self):
+        for text in ("", "Обычное описание.", "Прошу отозвать обращение."):
+            stage = gdata.gov_stage(gdata.suggest_doc_type(self._doc(text)))
+            self.assertEqual(stage, gdata.GOV_STAGE_PRIMARY, text)
+
+
+class V391LayoutTests(unittest.TestCase):
+    """v39.1: форма должна вмещать содержимое без обрезки."""
+
+    def setUp(self):
+        self.src = Path("postanovlenie_prokuror_ui.py").read_text(encoding="utf-8")
+
+    def test_window_is_wide_enough_for_two_columns(self):
+        self.assertIn("setMinimumSize(1080, 720)", self.src)
+        self.assertIn("resize(1240, 880)", self.src)
+
+    def test_left_column_fits_long_rank_and_type(self):
+        self.assertIn("left.setMinimumWidth(460)", self.src)
+        self.assertIn("left.setMaximumWidth(500)", self.src)
+
+    def test_stage_combo_uses_short_labels_with_tooltips(self):
+        self.assertIn("GOV_STAGE_SHORT", self.src)
+        self.assertIn("setToolTip(gdata.GOV_STAGE_TITLES[stage])", self.src)
+
+    def test_type_combo_does_not_clip_long_value(self):
+        self.assertIn("setMinimumContentsLength", self.src)
+        self.assertIn("cb_type.setToolTip(text)", self.src)
+
+    def test_only_one_hint_label_under_lists(self):
+        """v42: лишних подсказок под списками нет — только пояснение этапа."""
+        self.assertNotIn("self.type_hint = self._label(", self.src)
+        self.assertIn("self.stage_hint = self._label(", self.src)
+
+    def test_empty_appeal_hint_is_neutral_not_warning(self):
+        block = self.src[self.src.index("def _on_appeal_changed"):]
+        block = block[:block.index("def _intake_check")]
+        self.assertNotIn('"Поле пустое', block)
+
+    def test_placeholders_do_not_carry_instructions(self):
+        """v42: в полях только образец данных, без служебных указаний."""
+        self.assertNotIn("Необязательно: если оставить пустым", self.src)
+        self.assertNotIn("Поле пустое", self.src)
+        self.assertIn("00:04 — сотрудник с ОПЗ 8332", self.src)
+
+    def test_short_stage_labels_fit_the_combo(self):
+        for stage, title in gdata.GOV_STAGE_SHORT.items():
+            self.assertLessEqual(len(title), 48, title)
+            self.assertIn(stage, gdata.GOV_STAGE_TITLES)
+
+
+class V40ExtraFactsTests(unittest.TestCase):
+    """v40: в «УСТАНОВИЛ» не должно быть лишнего материала (выгрузка AG-1)."""
+
+    APPEAL = (
+        "От: гражданина штата Сан-Андреас Sae Gucci\n"
+        "1. Данные о заявителе: Sae Gucci 56741\n"
+        "2. Предмет обращения: заявление об обжаловании решения должностного лица\n"
+        "3. Сведения о нарушителе: сотрудник FIB\n"
+        "5. Подробное описание ситуации: Я стоял, никого не трогал, ко мне "
+        "подбегает шериф и просит снять маску. Сотрудник ФИБ накинул на меня "
+        "наручники, хотя 15 секунд на исполнение требования не закончились.\n"
+        "8. Доказательства правонарушения: не указаны\n"
+        "Подпись и расшифровка заявителя: S.Gucci\n")
+
+    ESTABLISHED = ("В Офис Генерального прокурора поступило обращение от "
+                   "гражданина Sae Gucci на неправомерные действия сотрудника "
+                   "Federal Investigation Bureau. Доказательства отсутствуют.")
+
+    def _doc(self, **kwargs):
+        doc = gdata.PostanovlenieProkurora(
+            doc_number="AG-1", doc_date="07.11.2026", author_name="Marcus Nomad",
+            author_id="85028", applicant_name="Sae Gucci",
+            doc_stage=gdata.GOV_STAGE_FINAL,
+            doc_type="Об отказе в удовлетворении обращения")
+        doc.apply_appeal(self.APPEAL)
+        doc.established = self.ESTABLISHED
+        for key, value in kwargs.items():
+            setattr(doc, key, value)
+        return doc
+
+    # ── пересказ заявителя не дублируется ───────────────────────────────
+    def test_raw_appeal_in_situation_is_not_repeated(self):
+        doc = self._doc(situation=self.APPEAL, prosecutor_facts=self.APPEAL)
+        facts = doc.facts_text()
+        self.assertIn("Доказательства отсутствуют", facts)
+        self.assertNotIn("Я стоял, никого не трогал", facts)
+
+    def test_own_prosecutor_facts_are_kept(self):
+        own = ("00:14 — сотрудник ФИБ надевает наручники; 00:22 — уводит "
+               "заявителя к патрульному автомобилю.")
+        doc = self._doc(situation=own, prosecutor_facts=own)
+        facts = doc.facts_text()
+        self.assertIn("00:14", facts)
+        self.assertIn("Доказательства отсутствуют", facts)
+        self.assertNotIn("Я стоял, никого не трогал", facts)
+
+    def test_situation_matching_appeal_description_is_dropped(self):
+        doc = self._doc(situation="Я стоял, никого не трогал, ко мне подбегает "
+                                  "шериф и просит снять маску.")
+        self.assertNotIn("Я стоял, никого не трогал", doc.facts_text())
+
+    # ── «образуют нарушение» только при реальном нарушении ─────────────
+    def test_no_offence_phrase_for_refusal_in_merits(self):
+        doc = self._doc(violation_act="Регламент подачи обращений в Офис "
+                                      "Генерального прокурора штата San-Andreas",
+                        violation_clause="отсутствует")
+        facts = doc.facts_text()
+        self.assertNotIn("образуют нарушение", facts)
+        self.assertNotIn("Регламента подачи обращений", facts.split("Доказательства")[1])
+
+    def test_no_offence_phrase_for_completed_check(self):
+        doc = self._doc(doc_type="О завершении проверки по обращению и передаче "
+                                 "материалов в уголовное производство",
+                        violation_act="Регламент подачи обращений")
+        self.assertNotIn("образуют нарушение", doc.facts_text())
+
+    def test_offence_phrase_still_printed_when_charged(self):
+        doc = self._doc(doc_type="О привлечении к административной ответственности",
+                        violation_act="Этический кодекс штата San-Andreas",
+                        violation_clause="статья 28")
+        self.assertIn("образуют нарушение", doc.facts_text())
+
+    # ── заглушки «не указан» больше не попадают в текст ─────────────────
+    def test_placeholder_answers_are_recognized(self):
+        for value in ("не указан", "Не указано", "отсутствует", "отсутствуют",
+                      "нет данных", "—", "-", "неизвестно"):
+            self.assertTrue(gdata.is_placeholder(value), value)
+        for value in ("Sae Gucci", "44628", "статья 28 Этического кодекса"):
+            self.assertFalse(gdata.is_placeholder(value), value)
+
+    def test_resolution_has_no_placeholder_ids(self):
+        doc = self._doc(applicant_id="не указан", subject_name="сотрудник FIB",
+                        subject_id="не указано")
+        points = " ".join(doc.decision_points())
+        self.assertNotIn("не указан", points)
+        self.assertNotIn("не указано", points)
+        self.assertIn("Sae Gucci", points)
+
+    # ── сквозной разбор ответа ИИ ───────────────────────────────────────
+    def test_answer_with_placeholder_fields_produces_clean_facts(self):
+        base = self._doc(situation=self.APPEAL, prosecutor_facts=self.APPEAL)
+        answer = ("===ПОСТАНОВЛЕНИЕ===\n"
+                  "Номер: AG-1\nДата: 07.11.2026\n"
+                  "Вид документа: Об отказе в удовлетворении обращения\n"
+                  "Пункт нарушения: отсутствует\n"
+                  "Нарушенный акт: Регламент подачи обращений в Офис Генерального "
+                  "прокурора штата San-Andreas\n"
+                  "УСТАНОВИЛ:\n" + self.ESTABLISHED + "\n"
+                  "ПОСТАНОВИЛ:\n1. В удовлетворении обращения отказать.\n"
+                  "===КОНЕЦ ПОСТАНОВЛЕНИЯ===\n")
+        doc = gdata.parse_gov_answer(answer, base=base)
+        facts = doc.facts_text()
+        self.assertNotIn("образуют нарушение", facts)
+        self.assertNotIn("Я стоял, никого не трогал", facts)
+        self.assertEqual(facts.count("Доказательства отсутствуют"), 1)
+
+
+class V41FieldLabelLeakTests(unittest.TestCase):
+    """v41: названия полей бланка не должны попадать в текст «УСТАНОВИЛ».
+
+    Выгрузка «Постановление_4/AG-2»: ИИ закончил «Обстоятельства» обрубком
+    «Отдел сотрудника:» (поле пустое), а в «УСТАНОВИЛ» первой строкой шло
+    «Место события: здание Emergency Medical Services г. Лос-Сантос».
+    """
+
+    APPAREL = ("Видео длится 46 секунд, сотрудник FIB 301 просто стоит "
+               "спиной и никак не реагирует")
+
+    def test_tail_label_without_value_is_removed(self):
+        cleaned = gdata.strip_field_label_leaks(self.APPAREL + "\nОтдел сотрудника:")
+        self.assertEqual(cleaned, self.APPAREL)
+
+    def test_label_with_value_keeps_only_value(self):
+        cleaned = gdata.strip_field_label_leaks(
+            "Место события: здание Emergency Medical Services г. Лос-Сантос. "
+            "Видео длится 46 секунд.")
+        self.assertEqual(cleaned, "здание Emergency Medical Services "
+                                  "г. Лос-Сантос. Видео длится 46 секунд.")
+
+    def test_label_in_the_middle_does_not_glue_sentences(self):
+        cleaned = gdata.strip_field_label_leaks(
+            "Здание EMS. Место события: Лос-Сантос. Далее сотрудник ушёл.")
+        self.assertEqual(cleaned, "Здание EMS. Лос-Сантос. Далее сотрудник ушёл.")
+
+    def test_plain_text_is_untouched(self):
+        text = "Сидел я на раскладушке.\nО принятии обращения к производству"
+        self.assertEqual(gdata.strip_field_label_leaks(text), text)
+
+    def test_event_place_is_not_printed_as_a_field_label(self):
+        doc = gdata.PostanovlenieProkurora(
+            doc_number="AG-2", doc_stage=gdata.GOV_STAGE_FINAL,
+            doc_type="О привлечении к административной ответственности",
+            situation=self.APPAREL + "\nОтдел сотрудника:",
+            prosecutor_facts=self.APPAREL + "\nОтдел сотрудника:",
+            event_place="здание Emergency Medical Services г. Лос-Сантос",
+            event_date="06.11.2026 10:17",
+            applicant_name="Lordik Claw", applicant_id="83461",
+            subject_name="сотрудника FIB с опознавательным знаком № 301",
+            violation_act="Устав Federal Investigation Bureau",
+            violation_clause="пункта 2.5 Главы II Устава FIB")
+        gdata.drop_placeholders(doc)
+        facts = doc.facts_text()
+        self.assertNotIn("Отдел сотрудника", facts)
+        self.assertNotIn("Место события:", facts)
+        # место остаётся, но внутри фразы, а не ярлыком реквизита
+        self.assertIn("здание Emergency Medical Services", facts)
+        self.assertIn("Событие имело место", facts)
+        self.assertNotIn("\n:", facts)
+
+
+class V41FactsJoinTests(unittest.TestCase):
+    """v41 (AG-2): части «УСТАНОВИЛ» не склеиваются и не дублируют вывод."""
+
+    def _doc(self, **kwargs):
+        params = dict(
+            doc_number="AG-2", doc_stage=gdata.GOV_STAGE_FINAL,
+            doc_type="О привлечении к административной ответственности",
+            applicant_name="Lordik Claw", applicant_id="83461",
+            subject_name="сотрудника FIB с опознавательным знаком № 301",
+            violation_act="Устав Federal Investigation Bureau",
+            violation_clause="пункта 2.5 Главы II Устава FIB")
+        params.update(kwargs)
+        return gdata.PostanovlenieProkurora(**params)
+
+    def test_parts_are_separated_by_full_stop(self):
+        doc = self._doc(
+            situation="сотрудник FIB 301 просто стоит спиной и никак не реагирует",
+            established="Гражданин обратился в Офис Генерального прокурора.")
+        facts = doc.facts_text()
+        self.assertIn("не реагирует.", facts)
+        self.assertIn("реагирует. Гражданин обратился", facts)
+
+    def test_offence_phrase_is_printed_once(self):
+        doc = self._doc(
+            established="Указанные обстоятельства образуют нарушение: статьи 28 "
+                        "Этического кодекса.")
+        self.assertEqual(doc.facts_text().count("образуют нарушение"), 1)
+
+    def test_offence_phrase_appears_when_ai_did_not_write_it(self):
+        doc = self._doc(established="Сотрудник бездействовал.")
+        self.assertIn("образуют нарушение", doc.facts_text())
+
+
+class V41HistorySplitTests(unittest.TestCase):
+    """v41: истории IAD и Прокурора не пересекаются.
+
+    Замечания: «Загрузить в форму» падало с AttributeError (история IAD
+    парсила документ Прокурора), запись появлялась в истории дважды, а номер
+    AG-2 продолжал нумерацию IAD.
+    """
+
+    def test_folders_are_separate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            iad = pdoc.DocumentHistory(root)
+            gov = gdata.GovHistory(root)
+            self.assertEqual(iad.folder, root / "history" / "iad")
+            self.assertEqual(gov.folder, root / "history" / "gov")
+            self.assertNotEqual(iad.folder, gov.folder)
+
+    def test_gov_history_parses_gov_document(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gov = gdata.GovHistory(Path(tmp))
+            doc = gdata.PostanovlenieProkurora(
+                doc_number="AG-1", applicant_name="Lordik Claw",
+                subject_name="FIB 301",
+                doc_stage=gdata.GOV_STAGE_FINAL,
+                doc_type="О привлечении к административной ответственности",
+                situation="Сотрудник бездействовал.", prosecutor_facts="Сотрудник бездействовал.")
+            gov.save(doc)
+            loaded = gov.load_index(0)
+            self.assertIsInstance(loaded, gdata.PostanovlenieProkurora)
+            # именно на этих методах падало «Загрузить в форму»
+            self.assertEqual(loaded.stage(), gdata.GOV_STAGE_FINAL)
+            self.assertIn("бездействовал", loaded.facts_text())
+
+    def test_iad_history_ignores_gov_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gdata.GovHistory(root).save(gdata.PostanovlenieProkurora(
+                doc_number="AG-1", applicant_name="Lordik Claw",
+                subject_name="FIB 301"))
+            iad = pdoc.DocumentHistory(root)
+            self.assertEqual(iad.items(), [])
+            self.assertEqual(iad.used_numbers(), [])
+
+    def test_legacy_gov_record_does_not_leak_into_iad_list(self):
+        """Старая запись Прокурора в корне хранилища не видна форме IAD (v41)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "20260101-000000.json").write_text(
+                json.dumps(gdata.PostanovlenieProkurora(
+                    doc_number="AG-1", doc_stage=gdata.GOV_STAGE_FINAL,
+                    applicant_name="Lordik Claw").history_payload(),
+                    ensure_ascii=False), encoding="utf-8")
+            iad = pdoc.DocumentHistory(root)
+            self.assertEqual(iad.items(), [])
+            gov = gdata.GovHistory(root)
+            self.assertEqual(len(gov.items()), 1)
+            self.assertEqual(gov.load_index(0).get("doc_number"), "AG-1")
+
+    def test_numbers_are_independent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            iad = pdoc.DocumentHistory(root)
+            gov = gdata.GovHistory(root)
+            iad.save(pdoc.Postanovlenie(doc_number="LSCSD-IAD-1",
+                                        subject_name="Qorick Mythic"))
+            iad.save(pdoc.Postanovlenie(doc_number="LSCSD-IAD-2",
+                                        subject_name="Qorick Mythic"))
+            self.assertEqual(
+                gdata.PostanovlenieProkurora().auto_number(gov.used_numbers(),
+                                                          prefix="AG"), "AG-1")
+            gov.save(gdata.PostanovlenieProkurora(doc_number="AG-1",
+                                                 applicant_name="Lordik Claw"))
+            self.assertEqual(
+                pdoc.Postanovlenie().auto_number(iad.used_numbers()), "LSCSD-IAD-3")
+
+    def test_same_snapshot_is_not_duplicated(self):
+        """Один снимок, скопированный в новый путь, показывается один раз."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            history = pdoc.DocumentHistory(root)
+            doc = pdoc.Postanovlenie(doc_number="LSCSD-IAD-1", subject_name="Qorick")
+            saved = history.save(doc)
+            (root / saved.name).write_text(saved.read_text(encoding="utf-8"),
+                                           encoding="utf-8")
+            self.assertEqual(len(history.items()), 1)
+
+
+class V41TwoStageAutoTests(unittest.TestCase):
+    """v41: «Определит ИИ» на этапе 1 — по обращению, на этапе 2 — по обстоятельствам."""
+
+    def test_auto_values_differ_by_stage(self):
+        self.assertEqual(gdata.auto_type_for(gdata.GOV_STAGE_PRIMARY),
+                         "Определит ИИ по обращению")
+        self.assertEqual(gdata.auto_type_for(gdata.GOV_STAGE_FINAL),
+                         "Определит ИИ по обстоятельствам")
+        self.assertNotEqual(gdata.GOV_DOC_TYPE_AUTO_APPEAL, gdata.GOV_DOC_TYPE_AUTO)
+
+    def test_auto_value_is_first_choice_of_its_stage(self):
+        """v43: первым ВСЕГДА «Определит ИИ по обращению»; виды — своего этапа."""
+        for stage in (gdata.GOV_STAGE_PRIMARY, gdata.GOV_STAGE_FINAL):
+            choices = gdata.type_choices(stage)
+            self.assertEqual(choices[0], gdata.DEFAULT_DOC_TYPE)
+            self.assertEqual(choices[0], "Определит ИИ по обращению")
+            # «по обстоятельствам» остаётся дополнительным пунктом (этап 2)
+            self.assertIn(gdata.auto_type_for(stage), choices)
+            # виды решений своего этапа, без чужих
+            for kind in gdata.stage_types(stage):
+                self.assertIn(kind, choices)
+        # на итоговом этапе в списке два «определит ИИ»: по обращению и по
+        # обстоятельствам — но по умолчанию выбран первый пункт.
+        final = gdata.type_choices(gdata.GOV_STAGE_FINAL)
+        self.assertIn(gdata.GOV_DOC_TYPE_AUTO, final)
+        self.assertNotIn(gdata.GOV_DOC_TYPE_AUTO, gdata.type_choices(gdata.GOV_STAGE_PRIMARY))
+
+    def test_stage_is_derived_from_auto_value(self):
+        self.assertEqual(gdata.gov_stage(gdata.GOV_DOC_TYPE_AUTO_APPEAL),
+                         gdata.GOV_STAGE_PRIMARY)
+        self.assertEqual(gdata.gov_stage(gdata.GOV_DOC_TYPE_AUTO),
+                         gdata.GOV_STAGE_FINAL)
+
+    def test_auto_values_are_recognized_and_not_normalized(self):
+        for value in (gdata.GOV_DOC_TYPE_AUTO, gdata.GOV_DOC_TYPE_AUTO_APPEAL):
+            self.assertTrue(gdata.is_auto_type(value))
+            self.assertEqual(gdata.normalize_gov_doc_type(value), "")
+        self.assertFalse(gdata.is_auto_type("О принятии обращения к собственному производству"))
+
+    def test_title_never_prints_the_auto_placeholder(self):
+        doc = gdata.PostanovlenieProkurora(doc_type=gdata.GOV_DOC_TYPE_AUTO_APPEAL)
+        self.assertNotIn("Определит ИИ", doc.title())
+        doc = gdata.PostanovlenieProkurora(doc_type=gdata.GOV_DOC_TYPE_AUTO,
+                                          doc_stage=gdata.GOV_STAGE_FINAL)
+        self.assertNotIn("Определит ИИ", doc.title())
+
+    def test_form_uses_stage_choices(self):
+        src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
+        block = src[src.index("def _fill_types"):]
+        block = block[:block.index("def _on_stage_changed")]
+        self.assertIn("type_choices(stage)", block)
+        self.assertIn("auto_type_for", src)
+
+    def test_stage_note_explains_evidence_of_the_stage(self):
+        """v42: подсказка этапа живёт в данных дела (`gov_case.STAGE_META`)."""
+        import gov_case as c
+        self.assertFalse(c.stage_meta(c.STAGE_INTAKE)["needs_facts"])
+        self.assertTrue(c.stage_meta(c.STAGE_MEASURE)["needs_facts"])
+        src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
+        self.assertIn("Этап откроется, когда обращение принято", src)
+
+    def test_prompt_asks_for_appeal_based_decision_on_stage_one(self):
+        src = (_P("main.py")).read_text(encoding="utf-8")
+        self.assertIn("Определит ИИ по обращению", src)
+        self.assertIn("Определит ИИ по обстоятельствам", src)
+
+
+class V42IntakeParseTests(unittest.TestCase):
+    """v42: «Проверка ИИ» — ответ ИИ переводит обращение в состояние."""
+
+    ACCEPTED = ("===ПРОВЕРКА ОБРАЩЕНИЯ===\n"
+                "Состояние: Принято\n"
+                "Основание: статья 14 Регламента подачи обращений\n"
+                "Вид решения: О принятии обращения к собственному производству\n"
+                "Что проверить: доказательства и тайм-коды\n"
+                "===КОНЕЦ ПРОВЕРКИ===\n===КОНЕЦ ОТВЕТА===")
+    REFUSED = ("===ПРОВЕРКА ОБРАЩЕНИЯ===\n"
+               "Состояние: Отказано\n"
+               "Основание: пункт 13 части 1 статьи 16 Регламента\n"
+               "===КОНЕЦ ПРОВЕРКИ===\n===КОНЕЦ ОТВЕТА===")
+
+    def test_accepted_answer_sets_in_progress(self):
+        result = gdata.parse_intake_answer(self.ACCEPTED)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["state"], gdata.INTAKE_ACCEPTED)
+        self.assertIn("14", result["basis"])
+        self.assertEqual(result["doc_type"],
+                         "О принятии обращения к собственному производству")
+
+    def test_refused_answer_keeps_the_basis(self):
+        result = gdata.parse_intake_answer(self.REFUSED)
+        self.assertEqual(result["state"], gdata.INTAKE_REFUSED)
+        self.assertIn("16", result["basis"])
+
+    def test_free_text_is_not_a_state(self):
+        result = gdata.parse_intake_answer("Обычный правовой разбор без блока.")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["state"], "")
+
+    def test_states_are_recognized_in_free_wording(self):
+        for text, expected in (
+                ("Состояние: обращение принято к производству", gdata.INTAKE_ACCEPTED),
+                ("Состояние: в принятии обращения отказано", gdata.INTAKE_REFUSED),
+                ("Состояние: переадресовано в IB FIB", gdata.INTAKE_REDIRECTED),
+                ("Состояние: производство прекращено", gdata.INTAKE_TERMINATED)):
+            self.assertEqual(gdata.normalize_intake_state(text), expected, text)
+
+
+class V42CaseTests(unittest.TestCase):
+    """v42: дело «Обращение №X», этапы и разделение PNG по этапам."""
+
+    APPEAL = ("От: гражданина штата Сан-Андреас Lordik Claw\n"
+              "1. Данные о заявителе: Lordik Claw 83461\n"
+              "3. Сведения о нарушителе: 301 FIB\n"
+              "5. Подробное описание ситуации: Сотрудник FIB не пресёк драку.\n"
+              "8. Доказательства правонарушения: Видеофиксация")
+
+    ACCEPTED = ("===ПРОВЕРКА ОБРАЩЕНИЯ===\nСостояние: Принято\n"
+                "Основание: статья 14 Регламента\n===КОНЕЦ ПРОВЕРКИ===")
+    REFUSED = ("===ПРОВЕРКА ОБРАЩЕНИЯ===\nСостояние: Отказано\n"
+               "Основание: пункт 13 части 1 статьи 16\n===КОНЕЦ ПРОВЕРКИ===")
+
+    def setUp(self):
+        import gov_case
+        self.c = gov_case
+
+    # ── состояния ───────────────────────────────────────────────────────
+    def test_accepted_case_opens_the_measure_stage(self):
+        case = self.c.GovCase(number="1", appeal_raw=self.APPEAL)
+        case.apply_intake(self.c.parse_intake_answer(self.ACCEPTED))
+        self.assertEqual(case.status, self.c.STATUS_IN_PROGRESS)
+        self.assertTrue(case.accepted())
+        self.assertEqual(case.next_stage()["kind"], self.c.STAGE_MEASURE)
+
+    def test_refused_case_blocks_the_measure_stage(self):
+        case = self.c.GovCase(number="1", appeal_raw=self.APPEAL)
+        case.apply_intake(self.c.parse_intake_answer(self.REFUSED))
+        self.assertEqual(case.status, self.c.STATUS_REFUSED)
+        self.assertFalse(case.accepted())
+        self.assertEqual(case.next_stage(), {})
+
+    def test_prosecutor_can_accept_against_ai_refusal(self):
+        case = self.c.GovCase(number="1", appeal_raw=self.APPEAL)
+        case.apply_intake(self.c.parse_intake_answer(self.REFUSED))
+        case.apply_intake(self.c.parse_intake_answer(self.REFUSED), force_accept=True)
+        self.assertTrue(case.accepted())
+        self.assertIn("вопреки", case.intake_basis)
+
+    def test_extra_stages_extend_the_chain(self):
+        case = self.c.GovCase(number="1", appeal_raw=self.APPEAL)
+        case.apply_intake(self.c.parse_intake_answer(self.ACCEPTED))
+        case.add_stage(self.c.STAGE_RECHECK)
+        self.assertIn(self.c.STAGE_RECHECK, case.plan())
+        case.mark_stage(self.c.STAGE_MEASURE, doc_number="AG-1")
+        self.assertEqual(case.next_stage()["kind"], self.c.STAGE_RECHECK)
+
+    # ── обстоятельства прокурора ────────────────────────────────────────
+    def test_prosecutor_facts_have_four_parts(self):
+        case = self.c.GovCase(
+            number="1", status=self.c.STATUS_IN_PROGRESS,
+            facts_video="00:23 — удар по окружающим",
+            facts_for="видео подтверждает бездействие",
+            facts_against="указаний не было",
+            proposal="штраф 20 000 $",
+            own_decision="привлечь к ответственности")
+        text = case.prosecutor_facts()
+        self.assertIn("00:23", text)
+        self.assertIn("В пользу обращения", text)
+        self.assertIn("Против обращения", text)
+        self.assertIn("Прокурор полагает возможным", text)
+        self.assertIn("Решение прокурора", text)
+        self.assertNotIn("null", text)
+
+    def test_prosecutor_facts_are_sentences(self):
+        case = self.c.GovCase(number="1", status=self.c.STATUS_IN_PROGRESS,
+                              facts_video="00:23 — удар",
+                              own_decision="привлечь к ответственности")
+        text = case.prosecutor_facts()
+        self.assertIn("удар.", text)
+        self.assertIn("ответственности.", text)
+
+    # ── этапы и файлы ───────────────────────────────────────────────────
+    def test_png_names_differ_by_stage(self):
+        first = self.c.stage_stem("AG-1", 1, self.c.STAGE_INTAKE)
+        second = self.c.stage_stem("AG-1", 2, self.c.STAGE_MEASURE)
+        self.assertNotEqual(first, second)
+        self.assertIn("эт.1", first)
+        self.assertIn("эт.2", second)
+        self.assertIn("принятие", first)
+        self.assertIn("санкция", second)
+
+    def test_stage_folders_are_separate(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            first = self.c.stage_folder(tmp, "AG-1", 1, self.c.STAGE_INTAKE)
+            second = self.c.stage_folder(tmp, "AG-1", 2, self.c.STAGE_MEASURE)
+            self.assertNotEqual(first, second)
+            self.assertTrue(first.is_dir() and second.is_dir())
+
+    def test_first_stage_document_is_not_overwritten(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = gdata.PostanovlenieProkurora(doc_number="AG-1")
+            case = self.c.GovCase(number="1", appeal_raw=self.APPEAL)
+            first = self.c.stage_artifacts(tmp, case, self.c.STAGE_INTAKE, 1, doc, "ответ 1")
+            second = self.c.stage_artifacts(tmp, case, self.c.STAGE_MEASURE, 2, doc, "ответ 2")
+            self.assertNotEqual(first["document"], second["document"])
+            self.assertTrue(first["document"].exists())
+            self.assertTrue(second["document"].exists())
+            self.assertEqual(first["document"].read_text(encoding="utf-8"),
+                             second["document"].read_text(encoding="utf-8"))
+
+    # ── хранилище дел ───────────────────────────────────────────────────
+    def test_store_numbers_cases_and_reopens_them(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            store = self.c.GovCaseStore(tmp)
+            first = store.open_or_create(self.APPEAL)
+            first.apply_intake(self.c.parse_intake_answer(self.ACCEPTED))
+            store.save(first)
+            self.assertEqual(first.number, "1")
+            again = store.open_or_create(self.APPEAL)
+            self.assertEqual(again.number, "1")          # то же обращение — то же дело
+            reopened = store.load("1")
+            self.assertEqual(reopened.status, self.c.STATUS_IN_PROGRESS)
+            self.assertIn("Lordik Claw", reopened.label())
+
+    def test_intake_request_asks_for_the_service_block(self):
+        case = self.c.GovCase(number="1", appeal_raw=self.APPEAL)
+        text = self.c.intake_request(case, "Marcus Nomad")
+        self.assertIn("===ПРОВЕРКА ОБРАЩЕНИЯ===", text)
+        self.assertIn("Состояние:", text)
+        self.assertIn("Основание:", text)
+        self.assertIn(self.APPEAL, text)
+
+    # ── форма ───────────────────────────────────────────────────────────
+    def test_form_has_check_button_and_no_preview(self):
+        src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
+        self.assertIn('QPushButton("Проверка ИИ")', src)
+        self.assertIn("_intake_check", src)
+        self.assertIn("_force_accept", src)
+        # v42: лишние кнопки убраны
+        self.assertNotIn('QPushButton("Предпросмотр")', src)
+        self.assertNotIn('QPushButton("Сохранить без отправки")', src)
+        self.assertNotIn("def _make_preview", src)
+        self.assertNotIn("def _save_only", src)
+
+    def test_form_has_four_facts_fields(self):
+        src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
+        for key in ("facts_video", "facts_for", "facts_against", "proposal",
+                    "own_decision"):
+            self.assertIn(f'self.texts["{key}"]', src)
+
+    def test_form_opens_case_by_number(self):
+        src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
+        self.assertIn("Открыть обращение №", src)
+        self.assertIn("def open_case", src)
+        self.assertIn("GovCaseStore", src)
+
+    def test_form_has_no_verbose_stage_hints(self):
+        src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
+        self.assertNotIn("STAGE_HINTS", src)
+        self.assertNotIn("Санкция не назначается.", src)
+
+    def test_default_type_is_ai_choice(self):
+        """v43: по умолчанию в «Вид решения» — «Определит ИИ по обращению»."""
+        src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
+        block = src[src.index("def _fill_types"):]
+        block = block[:block.index("def _on_stage_changed")]
+        self.assertIn("DEFAULT_DOC_TYPE", block)
+        self.assertIn("setCurrentIndex", block)
+        self.assertIn("is_auto_type", block)
+        self.assertEqual(gdata.type_choices(gdata.GOV_STAGE_PRIMARY)[0],
+                         "Определит ИИ по обращению")
+
+
+class V42PreambleTests(unittest.TestCase):
+    """v42: нормы вводной части берутся из ответа ИИ, а не зашиты в бланк."""
+
+    def test_custom_preamble_basis_is_used(self):
+        doc = gdata.PostanovlenieProkurora(
+            author_name="Marcus Nomad", author_rank="Прокурор",
+            author_id="85028", applicant_name="Lordik Claw",
+            preamble_basis="частью 2 статьи 36 Конституции штата Сан-Андреас и "
+                           "статьёй 33 Закона «О деятельности офиса Генерального "
+                           "прокурора штата Сан-Андреас»")
+        preamble = doc.preamble()
+        self.assertIn("статьёй 33 Закона", preamble)
+        self.assertNotIn("частями 1, 2 и 6 статьи 8", preamble)
+
+    def test_default_basis_is_used_without_answer_norms(self):
+        doc = gdata.PostanovlenieProkurora(
+            author_name="Marcus Nomad", applicant_name="Lordik Claw")
+        self.assertIn("частями 1, 2 и 6 статьи 8", doc.preamble())
+
+    def test_fields_survive_history_roundtrip(self):
+        doc = gdata.PostanovlenieProkurora(case_number="3", case_stage_kind="measure",
+                                           preamble_basis="статьёй 23 Регламента")
+        again = gdata.PostanovlenieProkurora.from_dict(doc.to_dict())
+        self.assertEqual(again.case_number, "3")
+        self.assertEqual(again.case_stage_kind, "measure")
+        self.assertIn("23", again.preamble())
+
+
+class V42PromptTests(unittest.TestCase):
+    """v42: промт читает ИИ — без ссылок на версии и с отдельной проверкой."""
+
+    def setUp(self):
+        root = _P("..")
+        self.path = root / "Для новой версии" / "Текущий промт" / "promt 1.28.txt"
+
+    def test_prompt_exists_and_has_no_version_notes(self):
+        text = self.path.read_text(encoding="utf-8")
+        self.assertNotIn("замечание v", text)
+        self.assertNotIn("выгрузк", text)
+        self.assertNotIn("v41", text)
+
+    def test_prompt_describes_the_service_block(self):
+        text = self.path.read_text(encoding="utf-8")
+        self.assertIn("===ПРОВЕРКА ОБРАЩЕНИЯ===", text)
+        self.assertIn("===КОНЕЦ ПРОВЕРКИ===", text)
+
+    def test_prompt_does_not_hardcode_the_preamble_norms(self):
+        text = self.path.read_text(encoding="utf-8")
+        self.assertIn("руководствуясь <НОРМЫ>", text)
+        self.assertNotIn("а также статьями 11, 12, 13 и 14 Регламента", text)
+
+    def test_project_rules_are_not_ignored_but_go_last(self):
+        text = self.path.read_text(encoding="utf-8")
+        self.assertIn("Дополнительно по правилам проекта", text)
+        self.assertIn("если вопрос прямо касается правил проекта", text)
+
+
+class V43IntakeTriggerTests(unittest.TestCase):
+    """v43: «Состояние: Отказать» и другие формулировки ИИ должны распознаваться."""
+
+    @staticmethod
+    def _answer(state_line: str) -> str:
+        return ("===ПРОВЕРКА ОБРАЩЕНИЯ===\n" + state_line +
+                "\nОснование: пункт 13 части 1 статьи 16 Регламента\n"
+                "===КОНЕЦ ПРОВЕРКИ===\n===КОНЕЦ ОТВЕТА===")
+
+    def test_infinitive_refusal_is_recognized(self):
+        """Баг: ИИ написал «Состояние: Отказать» — дело осталось «В процессе»."""
+        result = gdata.parse_intake_answer(self._answer("Состояние: Отказать"))
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["state"], gdata.INTAKE_REFUSED)
+        self.assertIn("16", result["basis"])
+
+    def test_other_refusal_wordings(self):
+        for wording in ("Отказано", "отказ", "Отказать в принятии",
+                        "отказ в принятии обращения", "в принятии отказать",
+                        "обращение не подлежит принятию", "ОТКАЗАТЬ"):
+            result = gdata.parse_intake_answer(self._answer(f"Состояние: {wording}"))
+            self.assertEqual(result["state"], gdata.INTAKE_REFUSED, wording)
+
+    def test_acceptance_wordings(self):
+        for wording in ("Принято", "Принять", "принимается",
+                        "Принято к производству"):
+            result = gdata.parse_intake_answer(self._answer(f"Состояние: {wording}"))
+            self.assertEqual(result["state"], gdata.INTAKE_ACCEPTED, wording)
+
+    def test_other_states_still_recognized(self):
+        self.assertEqual(
+            gdata.parse_intake_answer(self._answer("Состояние: Переадресовать"))["state"],
+            gdata.INTAKE_REDIRECTED)
+        self.assertEqual(
+            gdata.parse_intake_answer(self._answer("Состояние: Прекратить"))["state"],
+            gdata.INTAKE_TERMINATED)
+
+    def test_block_written_on_one_line(self):
+        text = ("=== ПРОВЕРКА ОБРАЩЕНИЯ === Состояние: Отказано; "
+                "Основание: пункт 1 части 1 статьи 16 === КОНЕЦ ПРОВЕРКИ ===")
+        result = gdata.parse_intake_answer(text)
+        self.assertEqual(result["state"], gdata.INTAKE_REFUSED)
+        self.assertIn("16", result["basis"])
+
+    def test_answer_without_markers_is_still_read(self):
+        result = gdata.parse_intake_answer(
+            "Состояние: Отказать. Основание: пункт 13 части 1 статьи 16")
+        self.assertEqual(result["state"], gdata.INTAKE_REFUSED)
+        self.assertTrue(gdata.has_intake_block(
+            "Состояние: Отказать. Основание: пункт 13 части 1 статьи 16"))
+
+    def test_markdown_answer_is_read(self):
+        text = ("**===ПРОВЕРКА ОБРАЩЕНИЯ===**\n**Состояние:** **Отказать**\n"
+                "**Основание:** пункт 1 части 1 статьи 16\n"
+                "**===КОНЕЦ ПРОВЕРКИ===**")
+        result = gdata.parse_intake_answer(text)
+        self.assertEqual(result["state"], gdata.INTAKE_REFUSED)
+
+    def test_plain_text_is_still_rejected(self):
+        result = gdata.parse_intake_answer("Обычный разбор без служебного блока.")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["state"], "")
+
+    def test_refusal_reflected_in_case_status(self):
+        import gov_case as c
+        case = c.GovCase(number="1", appeal_raw="обращение")
+        case.apply_intake(c.parse_intake_answer(self._answer("Состояние: Отказать")))
+        self.assertEqual(case.status, c.STATUS_REFUSED)
+        self.assertEqual(case.status_label(), "Отказано")
+
+
+class V43DefaultDocTypeTests(unittest.TestCase):
+    """v43: «Вид решения» по умолчанию всегда «Определит ИИ по обращению»."""
+
+    def test_default_value_constant(self):
+        self.assertEqual(gdata.DEFAULT_DOC_TYPE, "Определит ИИ по обращению")
+        self.assertEqual(gdata.DEFAULT_DOC_TYPE, gdata.GOV_DOC_TYPE_AUTO_APPEAL)
+
+    def test_first_choice_is_default_on_every_stage(self):
+        for stage in (gdata.GOV_STAGE_PRIMARY, gdata.GOV_STAGE_FINAL):
+            self.assertEqual(gdata.type_choices(stage)[0], gdata.DEFAULT_DOC_TYPE)
+
+    def test_concrete_types_stay_available(self):
+        primary = gdata.type_choices(gdata.GOV_STAGE_PRIMARY)
+        final = gdata.type_choices(gdata.GOV_STAGE_FINAL)
+        self.assertEqual(primary[1:], list(gdata.GOV_PRIMARY_TYPES))
+        self.assertIn(gdata.GOV_DOC_TYPE_AUTO, final)      # «по обстоятельствам»
+        for kind in gdata.GOV_FINAL_TYPES:
+            self.assertIn(kind, final)
+        self.assertNotIn("О привлечении к административной ответственности", primary)
+
+    def test_form_defaults_to_the_constant(self):
+        src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
+        block = src[src.index("def _fill_types"):]
+        block = block[:block.index("def _on_stage_changed")]
+        self.assertIn("gdata.DEFAULT_DOC_TYPE", block)
+
+
+class V43StageStabilityTests(unittest.TestCase):
+    """v43: после «Проверки ИИ» и «Сформировать» этап не переключается сам."""
+
+    def setUp(self):
+        import gov_case as c
+        self.c = c
+
+    def test_stage_number_is_fixed_per_kind(self):
+        case = self.c.GovCase(number="1", appeal_raw="обращение")
+        self.assertEqual(case.stage_number(self.c.STAGE_INTAKE), 1)
+        self.assertEqual(case.stage_number(self.c.STAGE_MEASURE), 2)
+
+    def test_stage_number_does_not_change_after_intake(self):
+        case = self.c.GovCase(number="1", appeal_raw="обращение")
+        before = case.stage_number(self.c.STAGE_INTAKE)
+        case.apply_intake(self.c.parse_intake_answer(
+            "===ПРОВЕРКА ОБРАЩЕНИЯ===\nСостояние: Принято\n===КОНЕЦ ПРОВЕРКИ==="))
+        self.assertEqual(case.stage_number(self.c.STAGE_INTAKE), before)
+        self.assertEqual(before, 1)
+
+    def test_stage_number_stable_after_forming_document(self):
+        case = self.c.GovCase(number="1", appeal_raw="обращение")
+        case.mark_stage(self.c.STAGE_INTAKE, doc_number="AG-1")
+        self.assertEqual(case.stage_number(self.c.STAGE_MEASURE), 2)
+        case.mark_stage(self.c.STAGE_MEASURE, doc_number="AG-2")
+        self.assertEqual(case.stage_number(self.c.STAGE_MEASURE), 2)
+        self.assertEqual(case.stage_number(self.c.STAGE_INTAKE), 1)
+
+    def test_extra_stage_gets_its_own_number(self):
+        case = self.c.GovCase(number="1", appeal_raw="обращение")
+        case.add_stage(self.c.STAGE_RECHECK)
+        self.assertEqual(case.stage_number(self.c.STAGE_INTAKE), 1)
+        self.assertEqual(case.stage_number(self.c.STAGE_MEASURE), 2)
+        self.assertEqual(case.stage_number(self.c.STAGE_RECHECK), 3)
+
+    def test_files_of_different_stages_do_not_clash(self):
+        case = self.c.GovCase(number="1", appeal_raw="обращение")
+        first = self.c.stage_stem("AG-1", case.stage_number(self.c.STAGE_INTAKE),
+                                  self.c.STAGE_INTAKE)
+        second = self.c.stage_stem("AG-1", case.stage_number(self.c.STAGE_MEASURE),
+                                   self.c.STAGE_MEASURE)
+        self.assertEqual(first, "AG-1 — эт.1 принятие")
+        self.assertEqual(second, "AG-1 — эт.2 санкция")
+        self.assertNotEqual(first, second)
+
+    def test_open_stage_kind_is_first_unfinished(self):
+        case = self.c.GovCase(number="1", appeal_raw="обращение")
+        self.assertEqual(case.open_stage_kind(), self.c.STAGE_INTAKE)
+        case.apply_intake(self.c.parse_intake_answer(
+            "===ПРОВЕРКА ОБРАЩЕНИЯ===\nСостояние: Принято\n===КОНЕЦ ПРОВЕРКИ==="))
+        self.assertEqual(case.open_stage_kind(), self.c.STAGE_MEASURE)
+
+    def test_form_selects_stage_only_when_opening_case(self):
+        src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
+        block = src[src.index("def open_case("):]
+        block = block[:block.index("def _collect_case")]
+        self.assertIn("_select_stage(case.open_stage_kind())", block)
+        # в применении ответа ИИ этап не выбирается
+        intake = src[src.index("def apply_intake_answer("):]
+        intake = intake[:intake.index("def _open_case_dialog")]
+        self.assertNotIn("_select_stage", intake)
+        self.assertNotIn("setCurrentIndex(", intake.replace("tabs.setCurrentIndex", "tabs."))
+
+    def test_form_stage_index_uses_case_numbering(self):
+        src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
+        block = src[src.index("def _stage_index"):]
+        block = block[:block.index("def _select_stage")]
+        self.assertIn("stage_number", block)
+        self.assertNotIn('len([s for s in self.case.stages if s.get("done")]) + 1', block)
+
+
+class V43FormGateTests(unittest.TestCase):
+    """v43: без «Проверки ИИ» кнопка «Сформировать» недоступна."""
+
+    def setUp(self):
+        import gov_case as c
+        self.c = c
+
+    def test_new_case_is_not_checked(self):
+        case = self.c.GovCase(number="1", appeal_raw="обращение")
+        self.assertFalse(case.intake_checked())
+
+    def test_checked_after_intake_answer(self):
+        case = self.c.GovCase(number="1", appeal_raw="обращение")
+        case.apply_intake(self.c.parse_intake_answer(
+            "===ПРОВЕРКА ОБРАЩЕНИЯ===\nСостояние: Отказать\n===КОНЕЦ ПРОВЕРКИ==="))
+        self.assertTrue(case.intake_checked())          # отказ — тоже проверка
+
+    def test_checked_after_stage_one_document(self):
+        case = self.c.GovCase(number="1", appeal_raw="обращение")
+        case.mark_stage(self.c.STAGE_INTAKE, doc_number="AG-1", accepted=True)
+        self.assertTrue(case.intake_checked())
+
+    def test_button_disabled_until_checked_in_source(self):
+        src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
+        self.assertIn("setEnabled(checked)", src)
+        self.assertIn("self.case.intake_checked()", src)
+        # и в сборке документа проверка тоже требуется
+        block = src[src.index("def _form("):]
+        block = block[:block.index("def showEvent")]
+        self.assertIn("intake_checked", block)
+
+
+class V43CasesDialogTests(unittest.TestCase):
+    """v43: стартовое окно «Обращения» со списком дел и состояний."""
+
+    APPEAL = ("От: гражданина штата Сан-Андреас Lordik Claw\n"
+              "1. Данные о заявителе: Lordik Claw 83461\n"
+              "5. Подробное описание ситуации: Сотрудник FIB не пресёк драку.\n")
+
+    def setUp(self):
+        import gov_case as c
+        self.c = c
+
+    def test_rows_have_status_and_progress(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            store = self.c.GovCaseStore(tmp)
+            case = store.open_or_create(self.APPEAL)
+            rows = self.c.case_rows(store)
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["number"], "1")
+            self.assertEqual(row["status"], "Новое")
+            self.assertIn("Lordik Claw", row["title"])
+            self.assertIn("проверка ИИ не выполнена", row["progress"])
+
+    def test_status_changes_after_intake(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            store = self.c.GovCaseStore(tmp)
+            case = store.open_or_create(self.APPEAL)
+            case.apply_intake(self.c.parse_intake_answer(
+                "===ПРОВЕРКА ОБРАЩЕНИЯ===\nСостояние: Отказать\n"
+                "Основание: пункт 13 части 1 статьи 16\n===КОНЕЦ ПРОВЕРКИ==="))
+            store.save(case)
+            row = self.c.case_rows(store)[0]
+            self.assertEqual(row["status"], "Отказано")
+            self.assertEqual(row["status_key"], self.c.STATUS_REFUSED)
+            self.assertIn("16", row["title"] + row["progress"] + case.intake_basis)
+
+    def test_progress_shows_next_stage(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            store = self.c.GovCaseStore(tmp)
+            case = store.open_or_create(self.APPEAL)
+            case.apply_intake(self.c.parse_intake_answer(
+                "===ПРОВЕРКА ОБРАЩЕНИЯ===\nСостояние: Принято\n===КОНЕЦ ПРОВЕРКИ==="))
+            store.save(case)
+            progress = self.c.case_rows(store)[0]["progress"]
+            self.assertIn("следующий", progress)
+            self.assertIn("Этап 2", progress)     # после принятия — санкция
+
+    def test_new_cases_sorted_newest_first(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            store = self.c.GovCaseStore(tmp)
+            first = store.open_or_create(self.APPEAL)
+            first.updated_at = 1000.0
+            store.save(first)
+            second = store.open_or_create(self.APPEAL + "Другое обращение\n")
+            rows = self.c.case_rows(store)
+            self.assertEqual([row["number"] for row in rows], [second.number, "1"])
+
+    def test_start_dialog_exists_and_is_used(self):
+        ui = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
+        main = (_P("main.py")).read_text(encoding="utf-8")
+        self.assertIn("class GovCasesDialog", ui)
+        self.assertIn("Открыть", ui)
+        self.assertIn("Новое обращение", ui)
+        self.assertIn("_choose_gov_case", main)
+        self.assertIn("GovCasesDialog", main)
+        # список открывается сам при первом показе формы, до всякой работы
+        show = ui[ui.index("def showEvent"):]
+        self.assertIn("_open_case_dialog", show[:show.index("def mousePressEvent")])
+        self.assertIn("ask_case_on_show", ui)
+
+
+class V43StageMemoryTests(unittest.TestCase):
+    """v43: выбранный прокурором этап запоминается в деле и не «прыгает»."""
+
+    def setUp(self):
+        import gov_case as c
+        self.c = c
+
+    def test_chosen_stage_reopens_as_is(self):
+        case = self.c.GovCase(number="1", appeal_raw="обращение")
+        case.apply_intake(self.c.parse_intake_answer(
+            "===ПРОВЕРКА ОБРАЩЕНИЯ===\nСостояние: Принято\n===КОНЕЦ ПРОВЕРКИ==="))
+        self.assertEqual(case.open_stage_kind(), self.c.STAGE_MEASURE)
+        case.set_stage_kind(self.c.STAGE_INTAKE)      # прокурор вернулся на этап 1
+        self.assertEqual(case.open_stage_kind(), self.c.STAGE_INTAKE)
+
+    def test_stage_survives_saving_and_reloading(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            store = self.c.GovCaseStore(tmp)
+            case = store.open_or_create("обращение")
+            case.apply_intake(self.c.parse_intake_answer(
+                "===ПРОВЕРКА ОБРАЩЕНИЯ===\nСостояние: Принято\n===КОНЕЦ ПРОВЕРКИ==="))
+            case.set_stage_kind(self.c.STAGE_RECHECK)
+            store.save(case)
+            again = store.load(case.number)
+            self.assertEqual(again.stage_kind, self.c.STAGE_RECHECK)
+            self.assertEqual(again.open_stage_kind(), self.c.STAGE_RECHECK)
+            self.assertEqual(again.stage_number(self.c.STAGE_RECHECK), 3)
+
+    def test_forming_document_does_not_switch_stage(self):
+        case = self.c.GovCase(number="1", appeal_raw="обращение")
+        case.apply_intake(self.c.parse_intake_answer(
+            "===ПРОВЕРКА ОБРАЩЕНИЯ===\nСостояние: Принято\n===КОНЕЦ ПРОВЕРКИ==="))
+        case.set_stage_kind(self.c.STAGE_INTAKE)
+        case.mark_stage(self.c.STAGE_INTAKE, doc_number="AG-1", accepted=True)
+        self.assertEqual(case.open_stage_kind(), self.c.STAGE_INTAKE)
+
+    def test_unknown_stage_is_ignored(self):
+        case = self.c.GovCase(number="1", appeal_raw="обращение")
+        case.set_stage_kind("неизвестный")
+        self.assertEqual(case.stage_kind, "")
+        self.assertEqual(case.open_stage_kind(), self.c.STAGE_INTAKE)
+
+    def test_form_saves_stage_choice(self):
+        src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
+        self.assertIn("set_stage_kind", src)
+        self.assertIn("self.case.stage_kind = self._stage_kind()", src)
+
+
+class V43RenderFolderTests(unittest.TestCase):
+    """v43: PNG этапа попадает в папку своего этапа, номера совпадают."""
+
+    def setUp(self):
+        import gov_case as c
+        self.c = c
+
+    def test_form_folder_and_main_folder_match(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            case = self.c.GovCase(number="1", appeal_raw="обращение")
+            case.apply_intake(self.c.parse_intake_answer(
+                "===ПРОВЕРКА ОБРАЩЕНИЯ===\nСостояние: Принято\n===КОНЕЦ ПРОВЕРКИ==="))
+            case.mark_stage(self.c.STAGE_INTAKE, doc_number="AG-1", accepted=True)
+            # так считает форма перед отправкой заявки
+            form_index = case.stage_number(self.c.STAGE_MEASURE)
+            # и так считает main после ответа ИИ
+            main_index = case.stage_number(self.c.STAGE_MEASURE)
+            self.assertEqual(form_index, main_index)
+            self.assertEqual(
+                self.c.stage_folder(tmp, "AG-1", form_index, self.c.STAGE_MEASURE),
+                self.c.stage_folder(tmp, "AG-1", main_index, self.c.STAGE_MEASURE))
+            # и это не папка принятия
+            self.assertNotEqual(
+                self.c.stage_folder(tmp, "AG-1", 1, self.c.STAGE_INTAKE),
+                self.c.stage_folder(tmp, "AG-1", form_index, self.c.STAGE_MEASURE))
+
+    def test_both_pngs_survive_side_by_side(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            case = self.c.GovCase(number="1", appeal_raw="обращение")
+            doc = gdata.PostanovlenieProkurora(doc_number="AG-1")
+            first = self.c.stage_artifacts(tmp, case, self.c.STAGE_INTAKE, 1, doc, "1")
+            second = self.c.stage_artifacts(tmp, case, self.c.STAGE_MEASURE, 2, doc, "2")
+            first["document"].write_text("этап 1", encoding="utf-8")
+            second["document"].write_text("этап 2", encoding="utf-8")
+            self.assertEqual(first["document"].parent,
+                             self.c.stage_folder(tmp, "AG-1", 1, self.c.STAGE_INTAKE))
+            self.assertEqual(second["document"].parent,
+                             self.c.stage_folder(tmp, "AG-1", 2, self.c.STAGE_MEASURE))
+            self.assertNotEqual(first["document"].parent,
+                                second["document"].parent)

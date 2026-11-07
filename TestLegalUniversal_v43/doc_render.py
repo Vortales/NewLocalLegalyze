@@ -546,7 +546,12 @@ def render_document(doc, assets: DocAssets | None = None) -> list:
     y = _draw_header(page, draw, doc, assets)
 
     max_width = PAGE_W - 2 * MARGIN_X
-    limit = PAGE_H - MARGIN_BOTTOM - 260  # оставляем место под подписи
+    # v39: нижняя граница текста. Раньше здесь вычиталось ещё 260 px «под
+    # подписи», но запас считался от `MARGIN_BOTTOM` — а колонтитул «стр. N из M»
+    # рисуется на `PAGE_H - 84`, то есть ВЫШЕ этой границы почти на 70 px.
+    # Из-за этого последняя строка абзаца наезжала на колонтитул (видно на
+    # выгрузке AG-2). Теперь граница — над колонтитулом с честным зазором.
+    limit = PAGE_H - MARGIN_BOTTOM - 120
 
     f_body = assets.fonts.get(28, "body")
     f_head = assets.fonts.get(30, "body")
@@ -555,6 +560,11 @@ def render_document(doc, assets: DocAssets | None = None) -> list:
     def ensure(height: int) -> None:
         """Перенос на новую страницу, если блок не помещается."""
         nonlocal page, draw, y
+        # v39: подпись и печать занимают нижние ~210 px последней страницы, но
+        # занимать их «заранее» на каждой странице нельзя — иначе теряется
+        # четверть листа. Держим текст в границах `limit`, а если на последней
+        # странице он всё-таки дошёл до зоны подписи — поднимаем подпись/печать
+        # не выше `_text_bottom` (это уже сделано в _draw_footer).
         if y + height <= limit:
             return
         pages.append(page)
@@ -581,21 +591,26 @@ def render_document(doc, assets: DocAssets | None = None) -> list:
                 y += line_h
             y += gap
             return
-        # Постранично: строки рисуем группами, чтобы уважать перенос страницы.
-        pending: list = []
-
-        def flush() -> None:
-            nonlocal y, pending
-            if pending:
-                block_text = "\n".join(pending)
-                y = draw_justified(draw, block_text, font, MARGIN_X + indent, y,
-                                   width, line_h, INK)
-                pending = []
-
-        for line in _wrap(draw, text, font, width):
-            ensure(line_h)
-            pending.append(line)
-        flush()
+        # v39: перенос страницы ВНУТРИ абзаца. Раньше здесь стоял цикл
+        # `for line in _wrap(...): ensure(line_h)`, но `y` внутри цикла не
+        # менялся — `ensure` всегда пропускал, и длинный абзац «УСТАНОВИЛ»
+        # дорисовывался поверх колонтитула (выгрузка AG-2). Теперь режем абзац
+        # на столько строк, сколько влезает до `limit`, и переносим остаток.
+        lines = _wrap(draw, text, font, width)
+        printed = 0
+        while printed < len(lines):
+            room = int((limit - y) // line_h)
+            if room <= 0:
+                ensure(10 ** 6)          # принудительный новый лист
+                room = int((limit - y) // line_h)
+                if room <= 0:
+                    break
+            chunk = lines[printed:printed + room]
+            printed += len(chunk)
+            y = draw_justified(draw, "\n".join(chunk), font, MARGIN_X + indent,
+                               y, width, line_h, INK)
+            if printed < len(lines):
+                ensure(10 ** 6)          # остаток абзаца — на следующий лист
         y += gap
 
     # Вводная часть.

@@ -86,6 +86,7 @@ import doc_render as prender
 from postanovlenie_ui import PostanovlenieDialog
 from postanovlenie_prokuror_ui import PostanovlenieProkuroraDialog
 import postanovlenie_prokuror_data as pgov
+import gov_case as pcases
 
 import json
 import os
@@ -5440,9 +5441,23 @@ class MainWindow(QMainWindow):
         return self._doc_regulation_cache
 
     def _document_history(self):
+        """История постановлений IAD (v41: с папкой вида, не общей)."""
         if getattr(self, "_doc_history", None) is None:
-            self._doc_history = pdoc.DocumentHistory(self._documents_root())
+            self._doc_history = pdoc.DocumentHistory(
+                self._documents_root(), kind=pdoc.HISTORY_KIND_IAD)
         return self._doc_history
+
+    def _document_gov_history(self):
+        """История постановлений Прокурора — отдельная от IAD (v41).
+
+        Раньше обе формы делили одну историю: в списке IAD появлялись
+        постановления Прокурора, «Загрузить в форму» падал с AttributeError
+        (документ собирался моделью IAD), а номера AG и LSCSD-IAD считались
+        по общему списку.
+        """
+        if getattr(self, "_doc_gov_history", None) is None:
+            self._doc_gov_history = pgov.GovHistory(self._documents_root())
+        return self._doc_gov_history
 
     def _open_postanovlenie(self):
         """Форма постановления: заполнить → «Сформировать» → .txt в чат → PNG."""
@@ -5467,25 +5482,61 @@ class MainWindow(QMainWindow):
                 force_topmost(int(self.overlay.winId()))
 
     def _open_postanovlenie_prokurora(self):
-        """Форма постановления Прокурора: заявка в чат → PNG из ответа ИИ."""
+        """Форма постановления Прокурора: заявка в чат → PNG из ответа ИИ.
+
+        v43: сначала открывается стартовое окно «Обращения» со списком дел и
+        их состояний — из него можно открыть обращение или начать новое.
+        """
         overlay_was_visible = self.overlay.isVisible() if self.overlay else False
         if overlay_was_visible:
             self.overlay.hide()
         try:
+            store = self._document_case_store()
+            chosen = self._choose_gov_case(store)
+            if chosen is False:
+                return                      # список закрыт без выбора
             dlg = PostanovlenieProkuroraDialog(
                 self.cfg,
                 base_dir=self._program_dir(),
-                history=self._document_history(),
+                history=self._document_gov_history(),
                 assets=self._document_gov_assets(),
                 parent=self,
+                case_store=store,
+                case=chosen or None,
             )
             dlg.formed.connect(self._on_document_formed)
+            # v42: «Проверка ИИ» — отдельный запрос в чат; ответ приходит в
+            # `_apply_gov_intake`. Окно закрывается сразу после отправки, как и
+            # «Сформировать»: ответ ИИ приходит в чат, а PNG собирается там же.
+            dlg.intake_requested.connect(self._on_gov_intake_requested)
+            self._gov_dialog = dlg
             dlg.exec()
+            self._gov_dialog = None
         finally:
             if overlay_was_visible and self.overlay:
                 self.overlay.show()
                 self.overlay.sync_geometry()
                 force_topmost(int(self.overlay.winId()))
+
+    def _choose_gov_case(self, store):
+        """Стартовое окно «Обращения» (v43): дело, False или «новое» (None)."""
+        try:
+            from postanovlenie_prokuror_ui import GovCasesDialog
+        except Exception:
+            diag.exception("gov.cases.import")
+            return None
+        dialog = GovCasesDialog(store, parent=self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return False
+        if dialog.new_requested:
+            return None
+        return dialog.selected_case
+
+    def _document_case_store(self):
+        """Дела «Обращение №X» для формы Прокурора (v42)."""
+        if getattr(self, "_doc_cases", None) is None:
+            self._doc_cases = pcases.GovCaseStore(self._documents_root())
+        return self._doc_cases
 
     def _document_gov_assets(self):
         """Герб и печать Офиса Генерального прокурора (v36)."""
@@ -5613,9 +5664,81 @@ class MainWindow(QMainWindow):
                 "Не пиши «прокуроровское производство» — правильно "
                 "«прокурорское производство»/«прокурорская проверка». "
                 "Нормы права в «Основании» перечисляй в родительном падеже "
-                "(«части 2 статьи 12.8», «Уголовного кодекса штата "
-                "Сан-Андреас»). Подпись прокурора (должность, ФИО, удостоверение) "
-                "НЕ нумеруй."
+                "«части 2 статьи 12.8», «Уголовного кодекса штата "
+                "Сан-Андреас». "
+                # v39: «Вид решения» — из двух частей. Этап приходит в заявке
+                # строкой «Этап: …» и развёрнутым требованием; ИИ не должен
+                # смешивать первичное решение с санкцией.
+                "ВИД РЕШЕНИЯ СОСТОИТ ИЗ ДВУХ ЧАСТЕЙ, и этап указан в заявке "
+                "строкой «Этап:». Если этап 1 (первичное решение) — оцени ТОЛЬКО "
+                "форму обращения по Регламенту (статьи 5, 7, 14, 16, 18, 25) и "
+                "вынеси одно из решений: принять к собственному производству, "
+                "отказать в принятии с НОМЕРОМ конкретного основания из части 1 "
+                "статьи 16, переадресовать по подведомственности (статьи 18–19, "
+                "с указанием органа или подразделения) либо прекратить "
+                "производство (статья 25). На этапе 1 санкцию НЕ назначай, "
+                "уголовное дело НЕ возбуждай, штраф НЕ выписывай. Если этап 2 "
+                "(итоговое решение) — оцени обращение вместе с разделом "
+                "«Обстоятельства» и выбери ОДНУ санкцию по статье 23 Регламента: "
+                "привлечение к административной ответственности, возбуждение "
+                "уголовного дела, передача материалов в суд, меры прокурорского "
+                "реагирования (статьи 9–9.3 Закона об ОГП), отказ в "
+                "удовлетворении обращения при недостаточности доказательств или "
+                "завершение проверки. Этапы связаны: этап 2 применяется только "
+                "к обращению, принятому на этапе 1, — если обращение не принято, "
+                "санкция не назначается. Если в заявке вид решения — «Определит "
+                "ИИ по обстоятельствам», выбери вид санкции САМ по обстоятельствам "
+                "и доказательствам и укажи его в поле «Вид документа» ровно "
+                "одной из формулировок: «О привлечении к административной "
+                "ответственности», «О возбуждении уголовного дела по обращению», "
+                "«О передаче материалов обращения в суд», «О применении мер "
+                "прокурорского реагирования», «Об отказе в удовлетворении "
+                "обращения», «О завершении проверки по обращению и передаче "
+                "материалов в уголовное производство». Санкция без нормы, "
+                "устанавливающей ответственность, недопустима. "
+                # v41: два разных значения «определит ИИ» — по этапам.
+                # v42: ИИ должен сам перечитать свой ответ и исправить
+                # противоречия — обращения в чат не ограничены.
+                "ПЕРЕД ОТВЕТОМ ПЕРЕПРОВЕРЬ СЕБЯ: сверь вид решения с "
+                "содержанием, убери внутренние противоречия, проверь, что "
+                "каждый вывод опирается на норму из Законодательной базы, и "
+                "только затем выдай итоговый блок. Если в заявке есть "
+                "«ОБСТОЯТЕЛЬСТВА ПРОКУРОРА» — учти доводы за и против, "
+                "предложенное наказание и решение прокурора, но прими "
+                "собственное решение по существу и обоснуй его. "
+                "Значение «Определит ИИ по обращению» — только этап 1: "
+                "обстоятельств и видео ещё нет, решение (принято / не принято, "
+                "соответствие Регламенту подачи) выводится из текста обращения. "
+                "Значение «Определит ИИ по обстоятельствам» — только этап 2: "
+                "вид санкции выводится из «Обстоятельств» прокурора, "
+                "видеофиксации и тайм-кодов. "
+                # v41 (выгрузка «Постановление_4», AG-2): ИИ приклеивал
+                # реквизиты бланка к тексту — в PNG появлялись строки
+                # «Место события: здание EMS…» и обрубок «Отдел сотрудника:».
+                "НЕ ВСТАВЛЯЙ в текст разделов «УСТАНОВИЛ:» и «Обстоятельства» "
+                "названия полей бланка: «Место события:», «Дата и время "
+                "события:», «Отдел сотрудника:», «Звание сотрудника:», «Пункт "
+                "нарушения:», «Нарушенный акт:», «Удостоверение:», «ID "
+                "заявителя:». Место, время и подразделение указывай внутри "
+                "фразы («событие произошло у здания Emergency Medical Services "
+                "г. Лос-Сантос»), а не списком реквизитов. Пустое поле не "
+                "печатай вовсе — обрубков вида «Отдел сотрудника:» без "
+                "значения быть не должно. "
+                # v40 (выгрузка AG-1): в «УСТАНОВИЛ» попадал сырой пересказ
+                # заявителя вторым абзацем и фраза «образуют нарушение» при
+                # отказе в удовлетворении, где нарушения никто не вменяет.
+                "В «УСТАНОВИЛ:» НЕ вставляй сырой текст пункта 5 обращения: "
+                "пересказывай официально-деловым языком от третьего лица "
+                "(«заявитель указывает, что…»). Обстоятельства приводи ОДИН раз, "
+                "без второго абзаца «установлено». Фразу «Указанные "
+                "обстоятельства образуют нарушение:» пиши только тогда, когда "
+                "нарушение действительно вменяется: в постановлении об отказе в "
+                "удовлетворении, о прекращении производства и о завершении "
+                "проверки её быть не должно. В поля «Пункт нарушения», "
+                "«Нарушенный акт», «Удостоверение», «ID заявителя», «Место "
+                "события», «Дата и время события» не пиши «отсутствует», "
+                "«не указан», «нет данных» — оставляй поле пустым. "
+                "Подпись прокурора (должность, ФИО, удостоверение) НЕ нумеруй."
             )
         else:
             text = common + (
@@ -5713,11 +5836,139 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str)
     def _apply_document_answer(self, text):
         """Ответ ИИ получен. Для Прокурора — свой разбор и своя проверка (v36)."""
+        # v42: «Проверка ИИ» — отдельный вид ответа (служебный блок
+        # «ПРОВЕРКА ОБРАЩЕНИЯ»); его нельзя разбирать как постановление.
+        if self._apply_gov_intake(text):
+            return
         if getattr(self, "_document_kind", "iad") == "gov":
             return self._apply_gov_answer(text)
         return self._apply_iad_answer(text)
 
     @pyqtSlot(str)
+    # ---------------------------------------------------------------- v42 --
+    #  Проверка обращения ИИ («принято / отказано») и этапы постановления.
+
+    @pyqtSlot(str, str)
+    def _on_gov_intake_requested(self, text, case_number):
+        """«Проверка ИИ»: отправляем обращение в чат и ждём служебный блок.
+
+        Здесь повторяется путь заявки: тот же текстовый ввод и та же кнопка
+        отправки, что у постановления, поэтому новый транспорт не нужен.
+        """
+        page = getattr(self.worker, "page", None) if self.worker else None
+        self._gov_intake_case = str(case_number or "")
+        self._gov_intake_text = str(text or "")
+        self._gov_intake_handled = None
+        if page is None:
+            diag.event("gov.intake.no_page")
+            self._set_status("Чат ещё не готов — проверьте обращение позже",
+                             "#f59e0b")
+            return
+        diag.event("gov.intake.requested", case=self._gov_intake_case,
+                   chars=len(self._gov_intake_text))
+        self._set_status("Проверка обращения ИИ…", THEME["accent"])
+
+        def do_send():
+            try:
+                page.eval(JS_FOCUS_INPUT, timeout=2)
+            except Exception:
+                diag.exception("gov.intake.focus_input")
+            time.sleep(0.15)
+            try:
+                page.send("Input.insertText",
+                          {"text": self._gov_intake_text}, timeout=5)
+            except Exception:
+                diag.exception("gov.intake.insert_text")
+            time.sleep(0.4)
+            try:
+                sent = page.eval(JS_STOP_AND_SEND, timeout=3).get("value")
+                diag.event("gov.intake.sent", result=str(sent)[:120])
+            except Exception:
+                diag.exception("gov.intake.send")
+
+        threading.Thread(target=do_send, name="GovIntakeSend", daemon=True).start()
+        self._watch_document_answer()
+
+    def _apply_gov_intake(self, text):
+        """Ответ ИИ на проверку обращения: состояние дела + подсказка.
+
+        Возвращает True, если ответ обработан (это был ответ на «Проверку ИИ»).
+
+        v43: разбор терпимее к формулировкам ИИ («Отказать», «отказ в
+        принятии», блок одной строкой, без «===»). Если состояние всё же не
+        распознано, ответ всё равно сохраняется в дело, чтобы прокурор видел
+        его в «Проверке обращения.txt», а не искал в чате.
+        """
+        if not pgov.has_intake_block(text):
+            return False
+        if getattr(self, "_gov_intake_handled", None) == text:
+            return True
+        if str(getattr(self, "_gov_intake_text", "")) and \
+                pdoc.is_own_request(text, self._gov_intake_text):
+            return False
+        result = pcases.parse_intake_answer(text)
+        if not result.get("ok"):
+            # Блок есть, но состояние не распознано: сохраняем ответ в дело
+            # (v43) и просим проверить ещё раз.
+            diag.event("gov.intake.unparsed", chars=len(text))
+            store = self._document_case_store()
+            case = None
+            if getattr(self, "_gov_intake_case", ""):
+                case = store.load(self._gov_intake_case)
+            if case is None and getattr(self, "_gov_intake_text", ""):
+                case = store.open_or_create(self._gov_intake_text)
+            if case is not None:
+                try:
+                    folder = store.folder(case.number)
+                    (folder / "Проверка обращения (не распознана).txt").write_text(
+                        text.replace("\r\n", "\n"), encoding="utf-8")
+                except Exception:
+                    diag.exception("gov.intake.save_unparsed")
+            self._set_status("Ответ ИИ по обращению не распознан — проверьте ещё раз",
+                             "#f59e0b")
+            return True
+        self._gov_intake_handled = text
+        self._gov_intake_watch_stop()
+        store = self._document_case_store()
+        case = store.load(self._gov_intake_case) if self._gov_intake_case else None
+        if case is None:
+            case = store.open_or_create(self._gov_intake_text)
+        case.apply_intake(result)
+        case.intake_checks = int(getattr(case, "intake_checks", 0) or 0) + 1
+        store.save(case)
+        try:
+            folder = store.folder(case.number)
+            (folder / "Проверка обращения.txt").write_text(
+                text.replace("\r\n", "\n"), encoding="utf-8")
+        except Exception:
+            diag.exception("gov.intake.save_answer")
+        diag.event("gov.intake.result", case=case.number, state=result["state"],
+                   status=case.status)
+        # Ответ пришёл при открытой форме — обновляем её состояние на месте
+        # (этап и вкладка не меняются, v43).
+        dialog = getattr(self, "_gov_dialog", None)
+        if dialog is not None:
+            try:
+                dialog.refresh_case(case)
+            except Exception:
+                diag.exception("gov.intake.refresh_dialog")
+        if result["state"] == pgov.INTAKE_ACCEPTED:
+            self._set_status(
+                f"Обращение №{case.number}: принято к производству", THEME["ok"])
+        else:
+            self._set_status(
+                f"Обращение №{case.number}: {result['state']} "
+                f"({result.get('basis') or 'основание в файле'})", "#f59e0b")
+        return True
+
+    def _gov_intake_watch_stop(self):
+        timer = getattr(self, "_doc_watch_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+
     def _apply_iad_answer(self, text):
         """Ответ ИИ получен: сохраняем его и печатаем PNG ИЗ ЭТОГО ФАЙЛА.
 
@@ -5951,23 +6202,53 @@ class MainWindow(QMainWindow):
 
         issues = []
         try:
+            # v42: PNG этапа — в свою папку и со своим именем. Замечание:
+            # «раздели итоговые файлы .png для различных этапов, чтобы файл,
+            # полученный на 1 этапе, не заменялся файлами следующих этапов».
+            store = self._document_case_store()
+            case = None
+            if doc.get("case_number"):
+                case = store.load(doc.get("case_number"))
+            elif getattr(self, "_gov_intake_case", ""):
+                case = store.load(self._gov_intake_case)
+            stage_kind = doc.get("case_stage_kind") or (
+                pcases.STAGE_MEASURE if doc.is_final() else pcases.STAGE_INTAKE)
+            if case is not None:
+                # v43: номер этапа постоянный для его вида и совпадает с тем,
+                # куда форма положила заявку (иначе PNG уходил в чужую папку).
+                stage_index = case.stage_number(stage_kind)
+            else:
+                case = pcases.GovCase(number=doc.get("case_number")
+                                      or store.next_number())
+                stage_index = case.stage_number(stage_kind)
             pages = prender.render_document(doc, self._document_gov_assets())
-            folder = pdoc.doc_folder(root, doc.get("doc_number"))
-            stem = doc.get("doc_number") or "postanovlenie-prokurora"
-            main_paths = prender.save_pages(pages, root, stem)
+            stem = pcases.stage_stem(doc.get("doc_number") or case.number,
+                                     stage_index, stage_kind)
+            stage_dir = pcases.stage_folder(
+                root, doc.get("doc_number") or case.number, stage_index, stage_kind)
+            main_paths = prender.save_pages(pages, stage_dir, stem)
             self._document_pngs = main_paths
+            folder = pdoc.doc_folder(root, doc.get("doc_number"))
             pdoc.copy_pngs_into(folder, main_paths)
-            (folder / "ИИ-документ.txt").write_text(doc.to_document_txt(), encoding="utf-8")
-            (folder / "ИИ-поля.json").write_text(
-                json.dumps(doc.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+            (stage_dir / "ИИ-документ.txt").write_text(
+                doc.to_document_txt(), encoding="utf-8")
+            (stage_dir / "ИИ-поля.json").write_text(
+                json.dumps(doc.to_dict(), ensure_ascii=False, indent=2),
+                encoding="utf-8")
             issues = pgov.check_gov_document(doc)
             if issues:
-                (folder / "Проверка.txt").write_text(
+                (stage_dir / "Проверка.txt").write_text(
                     "Замечания по постановлению Прокурора:\n\n" +
                     "\n".join(f"{i}. {issue}" for i, issue in enumerate(issues, 1)),
                     encoding="utf-8")
-            self._document_history().save(doc)
-            diag.event("gov.rendered", pngs=len(main_paths), issues=len(issues))
+            # Дело: этап отмечен выполненным, PNG запомнен (v42).
+            case.mark_stage(stage_kind, doc_number=doc.get("doc_number", ""),
+                            png=str(main_paths[0]) if main_paths else "",
+                            accepted=(stage_kind == pcases.STAGE_INTAKE))
+            store.save(case)
+            self._document_gov_history().save(doc)
+            diag.event("gov.rendered", pngs=len(main_paths), issues=len(issues),
+                       stage=stage_kind, stage_index=stage_index)
         except Exception as exc:
             diag.exception("gov.render")
             QMessageBox.warning(self, "PNG не сохранён",

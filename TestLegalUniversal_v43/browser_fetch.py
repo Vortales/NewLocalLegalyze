@@ -79,7 +79,7 @@ def download(url: str, target: Path, report=None, cancel=None) -> Path:
     """Скачать `url` в `target`. `report(доля, текст)`, `cancel()` — отмена."""
     report = report or (lambda *_a: None)
     target.parent.mkdir(parents=True, exist_ok=True)
-    request = urllib.request.Request(url, headers={"User-Agent": "Legalyze/1.0.8"})
+    request = urllib.request.Request(url, headers={"User-Agent": "Legalyze/1.1.0"})
     with urllib.request.urlopen(request, timeout=60) as response:
         total = int(response.headers.get("Content-Length") or 0)
         done = 0
