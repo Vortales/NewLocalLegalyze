@@ -1048,8 +1048,8 @@ class SourceTests(unittest.TestCase):
         self.assertIn('--nofollow-import-to=websocket.policyserver', txt)
         # v41: версия продукта поднята до 1.7.0.0 — сверяем с ps1, а не буквой
         version = (ROOT / 'build_nuitka_standalone.ps1').read_text(encoding='utf-8')
-        self.assertIn('--file-version=1.9.2.0', txt)
-        self.assertIn('--file-version=1.9.2.0', version)
+        self.assertIn('--file-version=1.9.3.0', txt)
+        self.assertIn('--file-version=1.9.3.0', version)
         self.assertIn('build_nuitka_standalone.ps1', txt)
 
     # ---------------------------------------------------------------- v13 --

@@ -1189,7 +1189,9 @@ class PostanovlenieProkuroraDialog(QDialog):
         self._on_appeal_changed()
         # v43: этап выбирается один раз — при открытии дела, и дальше не
         # меняется сам (замечание про «этап 1 превращался в этап 2»).
-        self._select_stage(case.open_stage_kind())
+        # v43.2: по делу со статусом «Отказано» открывается этап 1 — документ
+        # об отказе это первичное решение, и его нужно напечатать в PNG.
+        self._select_stage(cases.primary_stage_kind(case))
         self._refresh_case_view()
         self.status.setText(f"Открыто обращение №{case.number}")
         self.tabs.setCurrentIndex(0)
@@ -1471,8 +1473,11 @@ class PostanovlenieProkuroraDialog(QDialog):
             problems.append("Обращение")
         if meta["needs_facts"] and not self.case.has_facts():
             problems.append(meta["needs_facts_label"] or "Обстоятельства")
-        if kind == cases.STAGE_MEASURE and not self.case.accepted():
-            problems.append("Сначала примите обращение (этап 1)")
+        # v43.2: отказ в принятии — тоже документ, который печатается в PNG.
+        # Раньше форма отправляла такие дела на этап 2 и требовала принятия.
+        block = cases.stage_block_reason(self.case, kind)
+        if block:
+            problems.append(block)
         if problems:
             QMessageBox.information(
                 self, "Не хватает данных",
@@ -1486,8 +1491,12 @@ class PostanovlenieProkuroraDialog(QDialog):
                 self._documents_root(), doc.get("doc_number") or self.case.number,
                 stage_index, kind)
             chat_txt = folder / "Заявка (отправлено в чат).txt"
-            chat_txt.write_text(cases.stage_request(self.case, kind, doc),
-                                encoding="utf-8")
+            if self.case.refused() and not self.case.accepted():
+                # v43.2: документ об отказе — свой текст заявки (без санкции).
+                request_text = cases.refusal_intake_request(self.case, doc)
+            else:
+                request_text = cases.stage_request(self.case, kind, doc)
+            chat_txt.write_text(request_text, encoding="utf-8")
             self.chat_txt_path = str(chat_txt)
             self.png_paths = []
             (folder / "Заявка-поля.json").write_text(

@@ -3174,7 +3174,9 @@ class V43StageStabilityTests(unittest.TestCase):
         src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
         block = src[src.index("def open_case("):]
         block = block[:block.index("def _collect_case")]
-        self.assertIn("_select_stage(case.open_stage_kind())", block)
+        # v43.2: этап берётся у дела, но для статуса «Отказано» — всегда этап 1
+        # (документ об отказе печатается как первичное решение).
+        self.assertIn("_select_stage(cases.primary_stage_kind(case))", block)
         # в применении ответа ИИ этап не выбирается
         intake = src[src.index("def apply_intake_answer("):]
         intake = intake[:intake.index("def _open_case_dialog")]
