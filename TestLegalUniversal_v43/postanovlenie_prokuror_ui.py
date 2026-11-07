@@ -1,4 +1,4 @@
-"""postanovlenie_prokuror_ui.py — форма постановления Прокурора (v43).
+"""postanovlenie_prokuror_ui.py — форма постановления Прокурора (v43.2).
 
 Логика работы с обращением переработана по замечаниям v42:
 
@@ -45,6 +45,7 @@ import doc_render as render
 import postanovlenie_data as pdata
 import postanovlenie_prokuror_data as gdata
 import gov_case as cases
+import pending_send
 
 
 def _dark_style() -> str:
@@ -294,6 +295,9 @@ class PostanovlenieProkuroraDialog(QDialog):
     formed = pyqtSignal(object, str, object)
     #: Нужна проверка обращения ИИ: (текст запроса, номер дела).
     intake_requested = pyqtSignal(str, str)
+    #: Заявка готова, но отправлять её нужно ПОСЛЕ перезапуска (v43.2):
+    #: (запись отложенной отправки, путь к .txt заявки).
+    restart_requested = pyqtSignal(object, str)
 
     def __init__(self, cfg, base_dir=None, history=None, assets=None,
                  regulation=None, parent=None, case_store=None, case=None,
@@ -1006,13 +1010,38 @@ class PostanovlenieProkuroraDialog(QDialog):
             self.case.appeal_number = number
         self.cases.save(self.case)
         self.intake_pending = True
-        self.intake_hint.setText(
-            "Запрос отправлен ИИ. Ответ придёт служебным блоком "
-            "«ПРОВЕРКА ОБРАЩЕНИЯ» — состояние дела обновится само.")
-        self.intake_hint.setStyleSheet("color: #7c83ff; font-size: 11px;")
-        self.status.setText("Проверка обращения ИИ…")
+        self.status.setText("Проверка обращения: перезапуск с чистым чатом…")
         text = cases.intake_request(self.case, self.fields["author_name"].text().strip())
-        self.intake_requested.emit(text, str(self.case.number))
+        # v43.2: заявка НЕ уходит сразу. Клиент перезапускается, чат
+        # поднимается заново (без старых записей и ответов), и уже после этого
+        # запрос отправляется — так решил пользователь.
+        folder = self.cases.folder(self.case.number)
+        try:
+            request_path = folder / "Проверка обращения (заявка).txt"
+            request_path.write_text(text, encoding="utf-8")
+            record = pending_send.build_record(
+                kind="intake", request_text=text,
+                source_path=str(request_path),
+                case_number=str(self.case.number),
+                stage_kind=cases.STAGE_INTAKE,
+                stage_index=self.case.stage_number(cases.STAGE_INTAKE),
+                document_kind="gov",
+                title=f"Проверка обращения №{self.case.number}")
+            pending_send.save(self._documents_root(), record)
+        except Exception:
+            diag.exception("ui.gov.intake.pending")
+            QMessageBox.warning(
+                self, "Не удалось сохранить заявку",
+                "Заявка на проверку обращения не сохранена, отправка отменена.")
+            self.intake_pending = False
+            return
+        self.intake_hint.setText(
+            "Заявка сохранена. Клиент перезапустится с чистым чатом и сам "
+            "отправит проверку обращения — ответ придёт служебным блоком "
+            "«ПРОВЕРКА ОБРАЩЕНИЯ».")
+        self.intake_hint.setStyleSheet("color: #7c83ff; font-size: 11px;")
+        self.restart_requested.emit(record, str(request_path))
+        self.accept()
 
     def _intake_recheck(self) -> None:
         """Повторная проверка: ИИ анализирует обращение ещё раз (v42)."""
@@ -1478,7 +1507,32 @@ class PostanovlenieProkuroraDialog(QDialog):
                                 f"Не удалось сформировать документ: {exc}")
             return
         self.document = doc
+        # v43.2: заявка уходит в чат только ПОСЛЕ перезапуска клиента —
+        # пользователь просил перезапуск, чтобы чат был чистым (без старых
+        # записей и ответов ИИ).
+        try:
+            record = pending_send.build_record(
+                kind="document",
+                request_text=Path(self.chat_txt_path).read_text(encoding="utf-8"),
+                source_path=self.chat_txt_path,
+                case_number=str(self.case.number),
+                stage_kind=kind,
+                stage_index=self._stage_index(),
+                doc_type=doc.get("doc_type"),
+                document_kind="gov",
+                title=pending_send.describe({"case_number": self.case.number,
+                                             "stage_index": self._stage_index(),
+                                             "doc_type": doc.get("doc_type")}))
+            pending_send.save(self._documents_root(), record)
+        except Exception:
+            diag.exception("ui.gov.form.pending")
+            QMessageBox.warning(
+                self, "Не удалось сохранить заявку",
+                "Заявка не сохранена для отправки после перезапуска. "
+                "Отправка отменена — сформируйте документ заново.")
+            return
         self.formed.emit(doc, self.chat_txt_path, self.png_paths)
+        self.restart_requested.emit(record, str(self.chat_txt_path))
         self.accept()
 
     # --------------------------------------------------------- перетаскивание

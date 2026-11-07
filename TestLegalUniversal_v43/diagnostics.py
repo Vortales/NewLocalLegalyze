@@ -458,7 +458,7 @@ def setup():
           bitness=ctypes.sizeof(ctypes.c_void_p)*8, executable=sys.executable,
           cwd=str(Path.cwd()), frozen=bool(getattr(sys, 'frozen', False)),
           nuitka_compiled=('__compiled__' in globals()),
-          release_revision='universal-embedded-v43.1', packages=versions,
+          release_revision='universal-embedded-v43.2', packages=versions,
           windows_build=str(sys.getwindowsversion()) if sys.platform == 'win32' else None,
           modes={k: os.environ.get(k) for k in ('LEGALYZE_DISABLE_GPU',
                                                 'LEGALYZE_EXTERNAL_BROWSER',
