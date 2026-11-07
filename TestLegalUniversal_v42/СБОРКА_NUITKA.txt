@@ -1,5 +1,5 @@
 ================================================================================
-                    ЭТАЛОННЫЙ СИНТАКСИС СБОРКИ NUITKA (v37)
+                    ЭТАЛОННЫЙ СИНТАКСИС СБОРКИ NUITKA (v42)
                  Режим: Standalone (папка с Legalyze.exe и библиотеками)
 ================================================================================
 
@@ -20,10 +20,10 @@
 Ключи: -Msvc (только MSVC), -MinGW (только MinGW64), -Zig, -NoLto, -OneFile.
 
 --------------------------------------------------------------------------------
-1. КОМАНДА ВРУЧНУЮ ИЗ КОРНЯ ПАПКИ TestLegalUniversal_v37:
+1. КОМАНДА ВРУЧНУЮ ИЗ КОРНЯ ПАПКИ TestLegalUniversal_v42:
 --------------------------------------------------------------------------------
 
-python -m nuitka --mode=standalone --msvc=latest --lto=yes --enable-plugin=pyqt6 --windows-console-mode=disable --windows-icon-from-ico=icon.ico --include-package=requests --include-package=urllib3 --include-package=websocket --include-package=cryptography --include-package=fpdf --include-package=PIL --include-data-dir=data=data --nofollow-import-to=websocket.policyserver --nofollow-import-to=websocket.server --include-distribution-metadata=PyQt6 --include-distribution-metadata=PyQt6-Qt6 --include-distribution-metadata=PyQt6-WebEngine --include-distribution-metadata=requests --include-distribution-metadata=urllib3 --include-distribution-metadata=websocket-client --include-distribution-metadata=cryptography --include-distribution-metadata=fpdf2 --include-distribution-metadata=pillow --assume-yes-for-downloads --product-name=Legalyze --file-description="Legalyze" --company-name=Legalyze --file-version=1.3.0.0 --product-version=1.3.0.0 --copyright="Legalyze" --report=build/nuitka-report.xml --output-dir=build --output-filename=Legalyze.exe main.py
+python -m nuitka --mode=standalone --msvc=latest --lto=yes --enable-plugin=pyqt6 --windows-console-mode=disable --windows-icon-from-ico=icon.ico --include-package=requests --include-package=urllib3 --include-package=websocket --include-package=cryptography --include-package=fpdf --include-package=PIL --include-data-dir=data=data --nofollow-import-to=websocket.policyserver --nofollow-import-to=websocket.server --include-distribution-metadata=PyQt6 --include-distribution-metadata=PyQt6-Qt6 --include-distribution-metadata=PyQt6-WebEngine --include-distribution-metadata=requests --include-distribution-metadata=urllib3 --include-distribution-metadata=websocket-client --include-distribution-metadata=cryptography --include-distribution-metadata=fpdf2 --include-distribution-metadata=pillow --assume-yes-for-downloads --product-name=Legalyze --file-description="Legalyze" --company-name=Legalyze --file-version=1.8.0.0 --product-version=1.8.0.0 --copyright="Legalyze" --report=build/nuitka-report.xml --output-dir=build --output-filename=Legalyze.exe main.py
 
 Без Visual Studio: замените --msvc=latest на --mingw64 (Python 3.12 и ниже)
 или на --zig.
@@ -76,7 +76,7 @@ python -m nuitka --mode=standalone --msvc=latest --lto=yes --enable-plugin=pyqt6
   native_browser, win32_*) включены явно — подстраховка на случай
   динамических импортов.
 
-* Версия продукта поднята до 1.3.0.0 (v37).
+* Версия продукта поднята до 1.8.0.0 (v42).
 
 * Добавлены модули постановлений Прокурора (postanovlenie_prokuror_data,
   postanovlenie_prokuror_ui) и проверка наличия data\gerb_gov.png и

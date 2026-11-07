@@ -1046,7 +1046,10 @@ class SourceTests(unittest.TestCase):
         self.assertIn('--include-data-dir=data=data', txt)
         self.assertIn('--include-package=urllib3', txt)
         self.assertIn('--nofollow-import-to=websocket.policyserver', txt)
-        self.assertIn('--file-version=1.3.0.0', txt)
+        # v41: версия продукта поднята до 1.7.0.0 — сверяем с ps1, а не буквой
+        version = (ROOT / 'build_nuitka_standalone.ps1').read_text(encoding='utf-8')
+        self.assertIn('--file-version=1.8.0.0', txt)
+        self.assertIn('--file-version=1.8.0.0', version)
         self.assertIn('build_nuitka_standalone.ps1', txt)
 
     # ---------------------------------------------------------------- v13 --

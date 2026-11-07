@@ -1,6 +1,6 @@
 @echo off
 rem ===========================================================================
-rem  Legalyze v37 - сборка Nuitka (standalone). Обёртка над PS1-скриптом:
+rem  Legalyze v38 - сборка Nuitka (standalone). Обёртка над PS1-скриптом:
 rem  он сам выбирает компилятор C (MSVC, если установлен, иначе MinGW64).
 rem
 rem  Запуск:  build_nuitka_standalone.bat

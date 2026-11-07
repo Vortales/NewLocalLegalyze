@@ -340,22 +340,92 @@ class PostanovlenieDialog(QDialog):
         layout.setSpacing(8)
         layout.addWidget(self._label(
             "Сохранённые постановления — выберите запись и нажмите «Загрузить», "
-            "чтобы поправить старое заполнение вместо повторного ввода.", "Caption"))
+            "чтобы поправить старое заполнение вместо повторного ввода. "
+            "«Удалить» убирает выбранную запись, «Очистить историю» — все.", "Caption"))
         self.history_list = QListWidget()
         self.history_list.itemDoubleClicked.connect(lambda _i: self._load_history())
         layout.addWidget(self.history_list, 1)
         row = QHBoxLayout()
         refresh = QPushButton("Обновить")
         refresh.clicked.connect(lambda _c=False: self._refresh_history())
+        # v38: удаление выбранного постановления из истории.
+        self.history_delete_btn = QPushButton("Удалить")
+        self.history_delete_btn.setToolTip(
+            "Удалить выбранное постановление из истории")
+        self.history_delete_btn.clicked.connect(
+            lambda _c=False: self._delete_history())
+        self.history_clear_btn = QPushButton("Очистить историю")
+        self.history_clear_btn.setToolTip(
+            "Удалить все сохранённые постановления из истории")
+        self.history_clear_btn.clicked.connect(
+            lambda _c=False: self._clear_history())
+        delete = self.history_delete_btn
+        clear = self.history_clear_btn
         load = QPushButton("Загрузить в форму")
         load.setObjectName("Primary")
         load.clicked.connect(lambda _c=False: self._load_history())
         row.addWidget(refresh)
+        row.addWidget(delete)
+        row.addWidget(clear)
         row.addStretch()
         row.addWidget(load)
         layout.addLayout(row)
         self._refresh_history()
         return page
+
+    # ------------------------------------------------- удаление из истории (v38)
+
+    def _history_index(self) -> int:
+        """Выбранная запись истории (-1, если ничего не выбрано)."""
+        if not hasattr(self, "history_list"):
+            return -1
+        return self.history_list.currentRow()
+
+    def _delete_history(self) -> None:
+        """Удаляет выбранное постановление из истории (v38).
+
+        Замечание: «в «История» добавь возможность удалять «Постановления»».
+        Удаляется запись истории — снимок полей; папка готового документа с
+        PNG и текстами остаётся на диске (её могли уже отправить в чат).
+        """
+        index = self._history_index()
+        if index < 0:
+            QMessageBox.information(
+                self, "Удаление",
+                "Выберите постановление в списке истории.")
+            return
+        label = self.history.label_at(index) or "выбранную запись"
+        confirm = QMessageBox.question(
+            self, "Удалить постановление?",
+            f"Удалить из истории запись «{label}»?\n\n"
+            "Сам бланк (PNG и тексты в папке документа) останется на диске.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        if self.history.delete_index(index):
+            self.status.setText("Запись удалена из истории")
+        else:
+            QMessageBox.warning(self, "Ошибка",
+                                "Не удалось удалить запись истории.")
+        self._refresh_history()
+
+    def _clear_history(self) -> None:
+        """Очищает историю постановлений целиком (v38)."""
+        if not self.history.items():
+            QMessageBox.information(self, "История", "История уже пуста.")
+            return
+        confirm = QMessageBox.question(
+            self, "Очистить историю?",
+            "Удалить ВСЕ сохранённые постановления из истории?\n\n"
+            "Готовые бланки в папках документов останутся на диске.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        removed = self.history.delete_all()
+        self.status.setText(f"История очищена: удалено записей — {removed}")
+        self._refresh_history()
 
     def _build_preview_tab(self) -> QWidget:
         page = QWidget()
@@ -529,11 +599,16 @@ class PostanovlenieDialog(QDialog):
         self.history_list.clear()
         for label in self.history.labels():
             self.history_list.addItem(label)
-        if not self.history_list.count():
+        # v38: при пустой истории в списке стоит подсказка, а не запись, —
+        # удалять из неё нечего, поэтому «Удалить»/«Очистить» не активны.
+        empty = not self.history.items()
+        if empty:
             self.history_list.addItem("История пуста — сформированных постановлений ещё нет")
-            self.history_list.setEnabled(False)
-        else:
-            self.history_list.setEnabled(True)
+        self.history_list.setEnabled(not empty)
+        for name in ("history_delete_btn", "history_clear_btn"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.setEnabled(not empty)
 
     def _load_history(self) -> None:
         index = self.history_list.currentRow()

@@ -54,12 +54,32 @@ _NOT_A_PLACE = re.compile(
 )
 
 
+#: Ответы-заглушки, которые ИИ ставит в поля вместо данных (v40).
+#: Выгрузка AG-1: «Пункт нарушения: отсутствует», «Удостоверение: не указано»
+#: — из-за них в «УСТАНОВИЛ» появлялось «Указанные обстоятельства образуют
+#: нарушение: Регламента подачи обращений …».
+_GOV_EMPTY_ANSWERS = re.compile(
+    r"^(?:отсутству\w*|не\s+указан\w*|не\s+установлен\w*|не\s+имеется|"
+    r"нет\s+данных|нет|неизвестн\w*|не\s+применимо|нет\s+информации|"
+    r"не\s+представлен\w*|-+|—+|\.+)$",
+    re.IGNORECASE,
+)
+
+
 def is_placeholder(value: str) -> bool:
     """Значение — заглушка ИИ («по обстоятельствам, указанным в заявке»)."""
     text = _clean(value)
     if not text:
         return True
-    return bool(_GOV_PLACEHOLDER.match(text.strip(" .,;")))
+    text = text.strip(" .,;")
+    if _GOV_EMPTY_ANSWERS.match(text):
+        return True
+    return bool(_GOV_PLACEHOLDER.match(text))
+
+
+#: Значения «места события», которые местом дела не являются.
+_NOT_A_PLACE_CITY = re.compile(
+    r"^(?:г\.?\s*)?(?:лос[-\s]?сантос|los\s*santos)\s*\.?$", re.IGNORECASE)
 
 
 def is_place_placeholder(value: str) -> bool:
@@ -67,7 +87,32 @@ def is_place_placeholder(value: str) -> bool:
     text = _clean(value)
     if not text or is_placeholder(text):
         return True
+    # v38: ИИ подставлял в «Место события» город бланка («г. Лос-Сантос») —
+    # это не место происшествия, печатать его в «УСТАНОВИЛ» нельзя.
+    if _NOT_A_PLACE_CITY.match(text.strip()):
+        return True
     return bool(_NOT_A_PLACE.search(text))
+
+
+def strip_doc_type_tail(text: str) -> str:
+    """Убирает из конца абзаца заголовок вида решения (выгрузка v38).
+
+    Реальный случай AG-1: пересказ заявителя заканчивался строкой «О принятии
+    обращения к собственному производству» — заголовок бланка попал в
+    «УСТАНОВИЛ» как ещё одно предложение.
+    """
+    raw = str(text or "")
+    lines = [line for line in raw.splitlines() if line.strip()]
+    while lines and _clean(lines[-1]).lower().strip(" .") in {
+            kind.lower() for kind in GOV_DOC_TYPES}:
+        lines.pop()
+    result = "\n".join(lines).strip()
+    # Заголовок мог приклеиться к концу абзаца через точку/перенос:
+    # «… ч. 2 ст. 1 гл. 15 УК. О принятии обращения к собственному производству»
+    for kind in GOV_DOC_TYPES:
+        pattern = r"[\s.,;:—–-]*" + re.escape(kind) + r"\s*[.,]?\s*$"
+        result = re.sub(pattern, "", result, flags=re.IGNORECASE)
+    return result.strip()
 
 
 def strip_placeholder_clauses(text: str) -> str:
@@ -94,10 +139,81 @@ def strip_placeholder_clauses(text: str) -> str:
     return " ".join(cleaned).strip()
 
 
+#: Названия полей бланка, которые ИИ приклеивает к своему тексту (v41).
+#: Выгрузка «Постановление_4»: «Обстоятельства» = «Видео длится 46 секунд …
+#: сотрудник FIB 301 просто стоит спиной и никак не реагирует\nОтдел
+#: сотрудника:», а «Прокурор» получал «Место события: здание EMS…» внутри
+#: текста. В PDF это печаталось как лишние строки «Место события: …»,
+#: «Отдел сотрудника: …» посреди «УСТАНОВИЛ».
+_GOV_FIELD_LABELS_TEXT = (
+    "место события", "дата и время события", "отдел сотрудника",
+    "звание сотрудника", "нарушенный акт", "пункт нарушения",
+    "нормативное основание", "взыскание", "доказательства", "удостоверение",
+    "id заявителя", "дата обращения", "предмет обращения", "в отношении",
+    "постановление вынес", "удостоверение прокурора", "вид документа",
+    "заявитель", "город", "номер", "дата", "должность", "этап",
+)
+
+#: «Отдел сотрудника:» / «Место события — …» на границе строки или предложения.
+_GOV_LABEL_LEAK = re.compile(
+    r"(?:^|(?<=[.!?;:])\s+)(" + "|".join(
+        re.escape(label) for label in _GOV_FIELD_LABELS_TEXT) + r")\s*:\s*",
+    re.IGNORECASE,
+)
+
+#: Хвост «…\nОтдел сотрудника:» без значения — поле осталось пустым.
+_GOV_LABEL_TAIL = re.compile(
+    r"(?:^|\n|\s)(" + "|".join(
+        re.escape(label) for label in _GOV_FIELD_LABELS_TEXT) + r")\s*:\s*$",
+    re.IGNORECASE,
+)
+
+
+def strip_field_label_leaks(text: str) -> str:
+    """Убирает из текста приклеенные названия полей бланка (v41).
+
+    ИИ дописывал в конец «Обстоятельств» строку «Отдел сотрудника:» (поле
+    осталось пустым), а в «УСТАНОВИЛ» попадало «Место события: здание EMS».
+    Название поля — это реквизит, его место в шапке бланка, а не в тексте.
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return ""
+    # 1) Хвосты «<Поле>:» без значения (в том числе после перевода строки).
+    previous = None
+    while previous != raw:
+        previous = raw
+        raw = _GOV_LABEL_TAIL.sub("", raw, count=1).rstrip()
+    if not raw.strip():
+        return ""
+    # 2) Само название поля в начале фразы: оставляем значение, убираем ярлык.
+    #    Пробел после «.» сохраняем, иначе склеиваются соседние предложения.
+    raw = _GOV_LABEL_LEAK.sub(lambda m: " " if m.group(0).startswith(" ") else "", raw)
+    # 3) Пустые строки и повисшие разделители.
+    raw = re.sub(r"[ \t]+\n", "\n", raw)
+    raw = re.sub(r"\n{2,}", "\n", raw)
+    return raw.strip(" \n:;,—-")
+
+
 def drop_placeholders(doc) -> None:
     """Чистит поля постановления от заглушек, чтобы они не попали в текст."""
+    # v40: к тем же заглушкам относятся «не указан»/«отсутствует» в реквизитах
+    # заявителя и нарушителя — из-за них резолюция печатала «(ID-карта № не
+    # указан)» и «в отношении сотрудника FIB (ID № не указано)».
+    # v41: ИИ приклеивает названия полей к значениям («Видео … \nОтдел
+    # сотрудника:»), из-за чего в PNG появлялись лишние строки. Снимаем.
+    for key in ("situation", "established", "event_place", "penalty",
+                "violation_clause", "violation_act", "legal_basis", "evidence",
+                "extra", "subject_department", "subject_rank"):
+        value = doc.get(key)
+        if value:
+            cleaned = strip_field_label_leaks(value)
+            if cleaned != value:
+                doc.set(key, cleaned)
     for key in ("violation_act", "violation_clause", "event_place",
-                "event_date", "legal_basis", "penalty", "evidence", "extra"):
+                "event_date", "legal_basis", "penalty", "evidence", "extra",
+                "applicant_id", "subject_name", "subject_id", "subject_rank",
+                "subject_department", "appeal_number", "event_date"):
         value = doc.get(key)
         if value and is_placeholder(value):
             diag_event("gov.placeholder_dropped", field=key, value=str(value)[:60])
@@ -110,17 +226,291 @@ GOV_VEDOMSTVO = "STATE OF SAN-ANDREAS"
 GOV_CITY = "г. Лос-Сантос"
 GOV_PODRAZDELENIE = "OFFICE OF THE ATTORNEY GENERAL"
 
-#: Виды решений прокурора по обращению (Регламент, ст. 13):
-#: принятие к рассмотрению, отказ, приостановление и т. д.
-GOV_DOC_TYPES: tuple[str, ...] = (
+#: ── Вид решения: ДВЕ ЧАСТИ (v39, замечание пользователя) ───────────────
+#: Постановление выносится либо по итогам ПРЕДВАРИТЕЛЬНОГО изучения
+#: обращения (этап 1, не более 24 часов: принять / отказать / переадресовать /
+#: прекратить — Регламент, ст. 11–16, 18, 25), либо по итогам рассмотрения
+#: ПО СУЩЕСТВУ (этап 2, не более 72 часов: санкция — Регламент, ст. 22–23,
+#: Закон об ОГП, ст. 9, 33). Это два разных документа, а не один заголовок.
+GOV_STAGE_PRIMARY = "primary"
+GOV_STAGE_FINAL = "final"
+
+#: Часть 1 — первичное решение по обращению (судьба самого обращения).
+GOV_PRIMARY_TYPES: tuple[str, ...] = (
     "О принятии обращения к собственному производству",
     "Об отказе в принятии обращения к рассмотрению",
-    "О привлечении к административной ответственности",
-    "О возбуждении уголовного дела по обращению",
-    "О завершении проверки по обращению и передаче материалов в уголовное производство",
     "О переадресации обращения по подведомственности",
     "О прекращении производства по обращению",
 )
+
+#: Часть 2 — итоговое решение по существу (вид санкции / меры реагирования).
+GOV_FINAL_TYPES: tuple[str, ...] = (
+    "О привлечении к административной ответственности",
+    "О возбуждении уголовного дела по обращению",
+    "О передаче материалов обращения в суд",
+    "О применении мер прокурорского реагирования",
+    "Об отказе в удовлетворении обращения",
+    "О завершении проверки по обращению и передаче материалов в уголовное производство",
+)
+
+#: «Решение этапа 2 определяет ИИ по обстоятельствам» (санкция).
+GOV_DOC_TYPE_AUTO = "Определит ИИ по обстоятельствам"
+
+#: «Решение этапа 1 определяет ИИ по обращению» (v41).
+#: Замечание: «в первом этапе идёт первичное решение до 24 часов — там ещё
+#: нет обстоятельств, ИИ решает по обращению: принято или не принято и
+#: соответствует ли регламенту; во втором этапе — уже по обстоятельствам,
+#: видеофиксация и тайм-коды прокурора». Два разных значения, а не одно:
+#: на этапе 2 ИИ обязан опираться на «Обстоятельства», на этапе 1 их нет.
+GOV_DOC_TYPE_AUTO_APPEAL = "Определит ИИ по обращению"
+
+#: Значения «вид решения определит ИИ» — вне GOV_DOC_TYPES.
+GOV_AUTO_TYPES: tuple[str, ...] = (GOV_DOC_TYPE_AUTO_APPEAL, GOV_DOC_TYPE_AUTO)
+
+#: Маркеры служебного блока проверки обращения (v42): по ним клиент понимает,
+#: что ИИ ответил на «Проверку ИИ», а не написал свободный разбор.
+INTAKE_START = "===ПРОВЕРКА ОБРАЩЕНИЯ==="
+INTAKE_END = "===КОНЕЦ ПРОВЕРКИ==="
+
+#: Состояния обращения по итогам проверки ИИ (v42). Это не вид постановления,
+#: а судьба самого обращения: от неё зависит, открывается ли этап санкции.
+INTAKE_ACCEPTED = "Принято"
+INTAKE_REFUSED = "Отказано"
+INTAKE_REDIRECTED = "Переадресовано"
+INTAKE_TERMINATED = "Прекращено"
+GOV_INTAKE_STATES: tuple[str, ...] = (INTAKE_ACCEPTED, INTAKE_REFUSED,
+                                      INTAKE_REDIRECTED, INTAKE_TERMINATED)
+
+#: Все конкретные виды решений (без значения «определит ИИ»).
+GOV_DOC_TYPES: tuple[str, ...] = GOV_PRIMARY_TYPES + GOV_FINAL_TYPES
+
+#: Подписи этапов для заявки в чат (полные, с нормами).
+GOV_STAGE_TITLES: dict = {
+    GOV_STAGE_PRIMARY: "1. Первичное решение по обращению (до 24 часов, ст. 12 Регламента)",
+    GOV_STAGE_FINAL: "2. Итоговое решение по существу — санкция (до 72 часов, ст. 23 Регламента)",
+}
+
+#: Короткие подписи для выпадающего списка формы (v39.1).
+#: Замечание: полная подпись не помещалась в поле и обрывалась на «(до 72 час».
+GOV_STAGE_SHORT: dict = {
+    GOV_STAGE_PRIMARY: "1. Первичное решение (до 24 ч)",
+    GOV_STAGE_FINAL: "2. Итоговое решение — санкция (до 72 ч)",
+}
+
+#: Что именно проверяет прокурор на каждом этапе. Уходит в заявку для ИИ:
+#: на этапе 1 достаточно текста обращения (форма и ст. 16), на этапе 2 —
+#: обращения вместе с «Обстоятельствами» прокурора.
+GOV_STAGE_GUIDE: dict = {
+    GOV_STAGE_PRIMARY: (
+        "ЭТАП 1 — ПЕРВИЧНОЕ РЕШЕНИЕ (принятие, отказ, переадресация, "
+        "прекращение). Оцени ТОЛЬКО само обращение и его форму, санкцию не "
+        "назначай и уголовное дело не возбуждай. Проверь по Регламенту: "
+        "установима ли личность заявителя (ст. 7); указан ли предмет обращения "
+        "по части 1 статьи 5; есть ли описание события, дата и время, "
+        "нарушитель (ОПЗ и организация); есть ли доказательства со ссылками; "
+        "подписано ли обращение и есть ли расшифровка. Если обращение "
+        "соответствует форме и статье 14 — прими его к собственному "
+        "производству. Если есть основание из части 1 статьи 16 — откажи, "
+        "указав НОМЕР конкретного основания (например: пункт 13 части 1 "
+        "статьи 16 — отсутствует описание события). Если первичное разрешение "
+        "относится к иному органу (статьи 18–19) — переадресуй. Если "
+        "обращение отозвано, утратило предмет либо подано не по форме "
+        "неустранимо (статья 25) — прекрати производство. Если в заявке вид "
+        "решения — «Определит ИИ по обстоятельствам», сам определи, какое "
+        "первичное решение вытекает из обращения, и укажи его в поле «Вид "
+        "документа» ровно одной из формулировок: «О принятии обращения к "
+        "собственному производству», «Об отказе в принятии обращения к "
+        "рассмотрению», «О переадресации обращения по подведомственности», "
+        "«О прекращении производства по обращению». Санкцию на этом этапе всё "
+        "равно не назначай."
+    ),
+    GOV_STAGE_FINAL: (
+        "ЭТАП 2 — ИТОГОВОЕ РЕШЕНИЕ (санкция). Оцени обращение ВМЕСТЕ с "
+        "разделом «Обстоятельства» (видеофиксация прокурора с тайм-кодами) и "
+        "выбери одну санкцию по статье 23 Регламента: привлечение к "
+        "административной ответственности (пункт «а» части 1 статьи 23; норма "
+        "об ответственности — например статья 28 Этического кодекса, штраф от "
+        "10 000 до 50 000 $); возбуждение уголовного дела (Закон об ОГП, статья "
+        "33; нормы Уголовного кодекса); передача материалов в суд (пункт «в» "
+        "части 1 статьи 23); меры прокурорского реагирования — протест, "
+        "представление, предостережение (Закон об ОГП, статьи 9.1–9.3); отказ "
+        "в удовлетворении обращения при недостаточности доказательств (пункт "
+        "«б» части 1 статьи 23); завершение проверки с передачей материалов в "
+        "уголовное производство. Доказательства, которых нет в материалах, не "
+        "выдумывай."
+    ),
+}
+
+
+def gov_stage(doc_type: str) -> str:
+    """Этап постановления по его виду: «primary» или «final» (v39)."""
+    low = _clean(doc_type).lower().strip(" .")
+    # v41: заглушки «определит ИИ» сами указывают на этап: «по обращению» —
+    # первичное решение, «по обстоятельствам» — итоговое.
+    if low == GOV_DOC_TYPE_AUTO_APPEAL.lower():
+        return GOV_STAGE_PRIMARY
+    if low == GOV_DOC_TYPE_AUTO.lower():
+        return GOV_STAGE_FINAL
+    for kind in GOV_PRIMARY_TYPES:
+        if kind.lower() == low:
+            return GOV_STAGE_PRIMARY
+    for kind in GOV_FINAL_TYPES:
+        if kind.lower() == low:
+            return GOV_STAGE_FINAL
+    # Незнакомая формулировка: смотрим на слова. «Отказ в принятии» —
+    # первичный этап, «отказ в удовлетворении» — итоговый.
+    if "отказ" in low and "удовлетвор" not in low:
+        return GOV_STAGE_PRIMARY
+    if any(word in low for word in ("приняти", "переадрес", "прекращ")):
+        return GOV_STAGE_PRIMARY
+    return GOV_STAGE_FINAL
+
+
+def normalize_stage(value: str) -> str:
+    """Приводит «Этап» из формы или ответа ИИ к primary/final (v39)."""
+    text = _clean(value).lower()
+    if not text:
+        return ""
+    if text.startswith(("primary", "1", "перв", "предитог")):
+        return GOV_STAGE_PRIMARY
+    if text.startswith(("final", "2", "итог", "санкц", "по существу")):
+        return GOV_STAGE_FINAL
+    return ""
+
+
+def stage_types(stage: str) -> tuple:
+    """Виды решений выбранного этапа (для выпадающего списка формы)."""
+    return GOV_PRIMARY_TYPES if stage == GOV_STAGE_PRIMARY else GOV_FINAL_TYPES
+
+
+def auto_type_for(stage: str) -> str:
+    """Значение «вид решения определит ИИ» для этапа (v41).
+
+    Этап 1 — по обращению (обстоятельств ещё нет), этап 2 — по обстоятельствам
+    и видеофиксации с тайм-кодами.
+    """
+    return (GOV_DOC_TYPE_AUTO_APPEAL if stage == GOV_STAGE_PRIMARY
+            else GOV_DOC_TYPE_AUTO)
+
+
+def is_auto_type(value: str) -> bool:
+    """Это заглушка «определит ИИ», а не конкретный вид решения (v41)."""
+    return _clean(value) in GOV_AUTO_TYPES
+
+
+def type_choices(stage: str) -> list:
+    """Пункты списка «Вид решения»: сначала «Определит ИИ …», потом виды."""
+    return [auto_type_for(stage)] + list(stage_types(stage))
+
+
+def normalize_gov_doc_type(value: str, stage: str = "") -> str:
+    """Приводит формулировку ИИ к одному из видов решений (v39).
+
+    ИИ отвечает то «Постановление об отказе в принятии обращения к
+    рассмотрению», то «отказ в рассмотрении». В бланке нужен ровно один из
+    видов GOV_DOC_TYPES — иначе заголовок и проверки «поплывут».
+    """
+    text = _clean(value).lower()
+    # Пусто и «Определит ИИ …» — это не вид решения: пусть решение примет
+    # вызывающий код (см. parse_gov_answer, v39/v41).
+    if not text or text in [auto.lower() for auto in GOV_AUTO_TYPES]:
+        return ""
+    for kind in GOV_DOC_TYPES:
+        if kind.lower() in text or text in kind.lower():
+            return kind
+    # Порядок важен: «отказ в удовлетворении» проверяем раньше «отказа».
+    rules = (
+        (r"удовлетвор", "Об отказе в удовлетворении обращения"),
+        (r"отказ.*(принят|рассмотрен)", "Об отказе в принятии обращения к рассмотрению"),
+        (r"отказ", "Об отказе в принятии обращения к рассмотрению"),
+        (r"переадрес|подведомствен", "О переадресации обращения по подведомственности"),
+        (r"прекращ", "О прекращении производства по обращению"),
+        (r"привлеч.*административ|административн\w+ ответственн|штраф",
+         "О привлечении к административной ответственности"),
+        (r"возбужд.*уголовн|уголовн\w+ дел", "О возбуждении уголовного дела по обращению"),
+        (r"суд", "О передаче материалов обращения в суд"),
+        (r"протест|представлен|предостережен", "О применении мер прокурорского реагирования"),
+        (r"завершен.*проверк|передач.*материалов", "О завершении проверки по обращению и "
+                                                   "передаче материалов в уголовное производство"),
+        (r"принят.*производств", "О принятии обращения к собственному производству"),
+    )
+    for pattern, kind in rules:
+        if re.search(pattern, text):
+            return kind
+    return ""
+
+
+def suggest_primary_type(doc) -> str:
+    """Первичное решение по тексту обращения (v39.1).
+
+    Замечание: «и для 1. Первичное решение … тоже предусмотреть "Определит ИИ
+    по обстоятельствам"». Это корректно: все четыре первичных решения —
+    процедурные и выводятся из самого обращения (форма, ст. 14, ст. 16,
+    статьи 18–19, статья 25), «Обстоятельства» прокурора для них не нужны.
+    """
+    formal = doc.get("appeal_raw") or doc.get("situation")
+    parsed = parse_appeal_text(formal) if formal else {}
+    description = parsed.get("description") or ""
+    low = " ".join((formal or "", description)).lower()
+    # 1) Основания статьи 16, которые видны прямо в тексте обращения.
+    if not parsed.get("applicant_name") and not doc.get("applicant_name"):
+        return "Об отказе в принятии обращения к рассмотрению"      # п. 1
+    if not description:
+        return "Об отказе в принятии обращения к рассмотрению"      # п. 13
+    if formal and not parsed.get("signature"):
+        return "Об отказе в принятии обращения к рассмотрению"      # п. 4
+    # 2) Обращение отозвано / утратило предмет — статья 25.
+    if re.search(r"отзыва\w+\s+обращени|прошу\s+отозвать|обращение\s+отозвано|"
+                 r"утрат\w+\s+предмет", low):
+        return "О прекращении производства по обращению"
+    # 3) Вопрос не нашего ведомства — переадресация (статьи 18–19).
+    if re.search(r"подведомствен|переадрес|не\s+относится\s+к\s+компетенц", low):
+        return "О переадресации обращения по подведомственности"
+    # 4) Остальное — соответствует форме: принимаем к производству (ст. 14).
+    return "О принятии обращения к собственному производству"
+
+
+def suggest_doc_type(doc) -> str:
+    """Вид решения, который определяет ИИ (v39, v39.1).
+
+    Этап 1 — первичное решение по обращению (`suggest_primary_type`),
+    этап 2 — санкция по обстоятельствам дела.
+
+    Вызывается, когда в форме выбрано «Определит ИИ», а ИИ вид не прислал.
+    Правило простое и осторожное: сначала уголовный состав, затем
+    административная ответственность, затем суд, меры реагирования, отказ и
+    только потом «проверка завершена».
+    """
+    if hasattr(doc, "is_final") and not doc.is_final():
+        return suggest_primary_type(doc)
+    text = " ".join(doc.get(key) for key in (
+        "situation", "prosecutor_facts", "established", "penalty",
+        "violation_clause", "violation_act", "legal_basis")).lower()
+    # Только ЯВНЫЕ пункты «ПОСТАНОВИЛ» (пришедшие от ИИ или введённые
+    # вручную). Сгенерированные по виду решения пункты здесь брать нельзя:
+    # они сами зависят от заголовка, который уточняется этой функцией (v41).
+    raw_points = getattr(doc, "points", None) or []
+    text = text + " " + " ".join(str(point) for point in raw_points).lower()
+    if re.search(r"(возбудить|возбужден\w+)\s+уголовн|признаки преступления|состав преступления", text):
+        return "О возбуждении уголовного дела по обращению"
+    if re.search(r"привлеч\w*\s+к\s+административн|административн\w+\s+наказан|"
+                 r"назначить\s+штраф|штраф\s+в\s+размере", text):
+        return "О привлечении к административной ответственности"
+    if re.search(r"(переда\w*|направить)\s+(все\s+)?(материал\w*|дело|обращени\w*)"
+                 r"[^.]{0,60}?\bв\s+суд", text):
+        return "О передаче материалов обращения в суд"
+    if re.search(r"внести\s+представление|принести\s+протест|"
+                 r"предостережение|мер\w*\s+прокурорского\s+реагирования", text):
+        return "О применении мер прокурорского реагирования"
+    if re.search(r"отказать\s+в\s+удовлетворени|недостаточн\w+\s+доказательств|"
+                 r"не\s+подтвержд|не\s+установлен", text):
+        return "Об отказе в удовлетворении обращения"
+    if re.search(r"завершить\s+проверк|материал\w+\s+проверки", text):
+        return ("О завершении проверки по обращению и передаче материалов в "
+                "уголовное производство")
+    # Остаток: санкцию без основания не выдумываем — по пункту «б» части 1
+    # статьи 23 Регламента при недоказанности выносится отказ в удовлетворении.
+    return "Об отказе в удовлетворении обращения"
 
 #: Предметы обращения — ровно как в форме, которую подают граждане
 #: (Регламент подачи обращений, ст. 5).
@@ -140,6 +530,7 @@ GOV_SUBJECTS: tuple[str, ...] = (
 GOV_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("vedomstvo", "Ведомство", "Ведомство"),
     ("podrazdelenie", "Подразделение", "Подразделение"),
+    ("doc_stage", "Этап", "Этап"),
     ("doc_type", "Вид решения", "Вид документа"),
     ("doc_number", "Номер постановления", "Номер"),
     ("doc_date", "Дата постановления", "Дата"),
@@ -182,6 +573,8 @@ GOV_CHAT_KEYS: tuple[str, ...] = (
     "vedomstvo", "podrazdelenie", "doc_type", "doc_number", "doc_date",
     "author_name", "author_rank", "author_id", "city",
 )
+#: «Этап» в заявку строкой «Этап: …» не уходит: он разворачивается в
+#: требования GOV_STAGE_GUIDE (иначе ИИ на этапе 1 начинал назначать санкции).
 GOV_CHAT_FIELDS: tuple[tuple[str, str, str], ...] = tuple(
     row for row in GOV_FIELDS if row[0] in GOV_CHAT_KEYS)
 
@@ -213,6 +606,10 @@ GOV_ALIASES: dict = {
     "дата постановления": "doc_date",
     "вид документа": "doc_type",
     "вид решения": "doc_type",
+    "этап": "doc_stage",
+    "часть вида решения": "doc_stage",
+    "санкция": "doc_type",
+    "вид санкции": "doc_type",
     "постановление вынес": "author_name",
     "прокурор": "author_name",
     "вынес": "author_name",
@@ -346,6 +743,8 @@ def parse_appeal_text(raw: str) -> dict:
 
     # «5. Подробное описание ситуации:» мог быть пуст — тогда в поле попал
     # следующий реквизит. Такой «пересказ» описанием ситуации не считается.
+    # Туда же попадал заголовок вида решения («О принятии обращения к
+    # собственному производству») — в выгрузке v38 он замыкал пересказ.
     description = result.get("description", "")
     if description.lower().startswith(("подпись", "дата подачи", "доказательства",
                                       "ксерокопия", "электронную почту")):
@@ -355,10 +754,33 @@ def parse_appeal_text(raw: str) -> dict:
         # описание события, а служебные строки обращения (выгрузка v37).
         description = re.split(r"Настоящим заверяю", description)[0].strip()
         description = re.split(r"К заявлению прилагаю", description)[0].strip()
+        # v38: если «Подробное описание ситуации:» пуст, в него затягивался
+        # следующий реквизит — «Дата подачи заявления: 07.11.2026». Это не
+        # описание события.
+        description = re.split(r"\bДата подачи заявления\s*:", description)[0].strip()
+        description = re.split(r"\bПодпись и расшифровка\s*:", description)[0].strip()
+        description = strip_doc_type_tail(description)
         if description:
             result["description"] = description
         else:
             result.pop("description", None)
+
+    # v38: «Подпись и расшифровка заявителя: N. Hiddens» — в этой же строке
+    # оказывался хвост из инструкции клиента («Подготовь постановление
+    # Прокурора строго по этим данным…»). Подпись — одна строка, без хвоста.
+    signature = result.get("signature", "")
+    if signature:
+        signature = re.split(r"Подготовь постановление", signature)[0]
+        signature = re.split(r"\n", signature)[0].strip(" ;,")
+        if signature:
+            result["signature"] = signature
+        else:
+            result.pop("signature", None)
+    # Предмет обращения: буква варианта «в)» остаётся в тексте — снимаем её.
+    subject_text = result.get("appeal_subject", "")
+    if subject_text:
+        result["appeal_subject"] = re.sub(r"^[а-яa-z]\)\s*", "", subject_text,
+                                          flags=re.IGNORECASE).strip()
 
     # «Kirito Gold 178393» -> ФИО + ID
     applicant = result.get("applicant_name", "")
@@ -371,14 +793,30 @@ def parse_appeal_text(raw: str) -> dict:
     # «Todd Spencer 181956: FIB» -> ФИО, номер, организация
     violator = result.get("violator", "")
     if violator:
-        head = re.split(r"[:;,]", violator, maxsplit=1)[0].strip()
-        tail = violator[len(head):].lstrip(" :;,—-")
+        # v38: реальная форма «Lui Killua ;Номер удостоверения: 44628 ;
+        # Организация : FIB ; Должность и отдел: Head of Department , HRT».
+        # Раньше «отдел» получал ВСЮ строку реквизитов, а номер удостоверения
+        # не извлекался вовсе.
+        chunks = [c.strip(" ;,") for c in re.split(r"[;\n]", violator) if c.strip(" ;,")]
+        head = re.split(r"[:;,]", chunks[0], maxsplit=1)[0].strip()
+        tail = violator[len(head):]
         vname, vid = split_subject(head, "")
         result["violator"] = vname or head
         if vid:
             result["violator_id"] = vid
-        if tail:
-            result["violator_department"] = tail.strip(" ;,:—-")
+        for chunk in chunks[1:]:
+            low_chunk = chunk.lower()
+            value = re.split(r"[:—]", chunk, maxsplit=1)[-1].strip(" ;,:—-")
+            if "организац" in low_chunk or "ведомств" in low_chunk or "фракц" in low_chunk:
+                if value:
+                    result["violator_department"] = value
+            elif "отдел" in low_chunk and value and not result.get("violator_division"):
+                # «Должность и отдел: Head of Department , HRT» -> отдел HRT
+                result["violator_division"] = value.split(",")[-1].strip()
+            elif "удостоверен" in low_chunk or "опз" in low_chunk:
+                digits = re.search(r"\d{3,10}", value)
+                if digits:
+                    result["violator_id"] = digits.group(0)
 
     return result
 
@@ -413,6 +851,89 @@ def looks_like_appeal_form(text: str) -> bool:
         return True
     low = raw.lower()
     return sum(1 for mark in _APPEAL_FORM_MARKS if f"{mark}:" in low) >= 3
+
+
+#: Корни названий актов: по ним видно, о каком акте идёт речь, независимо
+#: от падежа («Уголовный кодекс» / «Уголовного кодекса»).
+_ACT_ROOTS: tuple[tuple[str, str], ...] = (
+    ("уголовн", "ук"),
+    ("процессуальн", "пк"),
+    ("этическ", "этический кодекс"),
+    ("административн", "ак"),
+    ("устав", "устав"),
+    ("конституц", "конституция"),
+    ("регламент", "регламент"),
+    ("закон", "закон об огп"),
+)
+
+
+def act_roots(text: str) -> set:
+    """Корни актов, упомянутых в строке (для поиска повторов)."""
+    low = str(text or "").lower()
+    return {key for root, key in _ACT_ROOTS if root in low}
+
+
+def acts_not_named(clause: str, act: str) -> str:
+    """Часть названия акта, которая ещё НЕ названа в норме (v39).
+
+    ИИ присылает «Нарушенный акт: Уголовный Кодекс штата Сан-Андреас,
+    Процессуальный кодекс штата Сан-Андреас» и «Пункт нарушения: статья 16.4
+    Уголовного кодекса штата Сан-Андреас, статья 17 Процессуального кодекса
+    штата Сан-Андреас». Первое название уже есть в норме, и в тексте
+    получалось «… статьи 17 Процессуального кодекса … Уголовного Кодекса …,
+    Процессуальный кодекс …». Добавляем только те акты, которых в норме нет.
+    """
+    raw_act = _clean(act)
+    if not raw_act:
+        return ""
+    clause_roots = act_roots(clause)
+    if not clause_roots:
+        return act_genitive(raw_act)
+    parts = [part.strip() for part in re.split(r"[,;]", raw_act) if part.strip()]
+    missing = [part for part in parts if not (act_roots(part) and act_roots(part) <= clause_roots)]
+    if not missing:
+        return ""
+    return act_genitive(", ".join(missing))
+
+
+def _drop_repeated_acts(text: str) -> str:
+    """Убирает повторные упоминания акта в «Основании» (выгрузка v38).
+
+    «… статья 16.4 Уголовного кодекса …, статья 17 Процессуального кодекса …;
+    Уголовный Кодекс штата Сан-Андреас, Процессуальный кодекс штата
+    Сан-Андреас; часть 2 статьи 36 Конституции …» — перечисление актов после
+    конкретных статей читается как ошибка: акт уже назван при норме.
+    """
+    raw = str(text or "")
+    if not raw:
+        return raw
+    chunks = [chunk.strip() for chunk in raw.split(";") if chunk.strip()]
+    named: set = set()
+    kept: list = []
+    for chunk in chunks:
+        roots = act_roots(chunk)
+        has_norm = bool(re.search(r"\b(стат|пункт|част|ст\.|ч\.|п\.)", chunk.lower())
+                        or re.search(r"\d+\.\d+", chunk))
+        if roots and not has_norm:
+            # Часть состоит только из названий актов: печатаем лишь те, что
+            # ещё не названы при конкретных нормах.
+            unique, seen_here = [], set()
+            for part in chunk.split(","):
+                key = part.strip()
+                if not key or key.lower() in seen_here:
+                    continue
+                seen_here.add(key.lower())
+                part_roots = act_roots(key)
+                if part_roots and part_roots <= named:
+                    continue
+                unique.append(key)
+                named |= part_roots
+            if unique:
+                kept.append(", ".join(unique))
+            continue
+        named |= roots
+        kept.append(chunk)
+    return "; ".join(kept)
 
 
 def _covered(fragment: str, text: str, threshold: float = 0.6) -> bool:
@@ -494,6 +1015,16 @@ def is_gov_echo(line: str) -> bool:
     return bool(_GOV_ECHO.match(strip_markdown(str(line or "")).strip(" .:;")))
 
 
+def _end_sentence(text: str) -> str:
+    """Закрывает предложение точкой, если ИИ её не поставил (v41)."""
+    body = str(text or "").strip()
+    if not body:
+        return ""
+    if body[-1] in ".!?…:;":
+        return body
+    return body + "."
+
+
 def append_unique(parts: list, text: str) -> None:
     """Добавляет предложения, которых ещё нет в `parts`.
 
@@ -525,6 +1056,13 @@ class PostanovlenieProkurora:
 
     vedomstvo: str = GOV_VEDOMSTVO
     podrazdelenie: str = GOV_PODRAZDELENIE
+    #: Этап постановления (v39): «primary» — первичное решение по обращению,
+    #: «final» — итоговое решение по существу (санкция). Пусто — выводится из
+    #: вида решения (`stage()`).
+    doc_stage: str = ""
+    #: Конкретный вид решения. «Определит ИИ …» — только значение списка в
+    #: форме (v41); в модель попадает уже выбранный вид, а если там всё-таки
+    #: осталась заглушка, `title()` подставит решение по обращению/санкции.
     doc_type: str = GOV_DOC_TYPES[0]
     doc_number: str = ""
     doc_date: str = field(default_factory=today_ru)
@@ -565,6 +1103,14 @@ class PostanovlenieProkurora:
     extra: str = ""
     #: Пункты «ПОСТАНОВИЛ». Пусто — собираются по виду решения.
     points: list = field(default_factory=list)
+    #: v42: нормы вводной части, которые ИИ указал в ответе. Раньше в бланк
+    #: всегда печатался один и тот же зашитый список (ч. 2 ст. 36 Конституции,
+    #: ч. 1, 2 и 6 ст. 8 Закона об ОГП, ст. 11–14 Регламента) — при изменении
+    #: законодательства бланк врал бы. Пусто — подставляется базовый перечень.
+    preamble_basis: str = ""
+    #: Дело «Обращение №X» и этап, на котором вынесен документ (v42).
+    case_number: str = ""
+    case_stage_kind: str = ""
     created_at: float = field(default_factory=time.time)
     source: str = "form"
 
@@ -572,6 +1118,7 @@ class PostanovlenieProkurora:
         self.applicant_name, self.applicant_id = split_subject(
             self.applicant_name, self.applicant_id)
         self.doc_type = _clean(self.doc_type) or GOV_DOC_TYPES[0]
+        self.doc_stage = _clean(self.doc_stage)
 
     # ------------------------------------------------------------------ утиль
 
@@ -594,8 +1141,39 @@ class PostanovlenieProkurora:
     def signature(self) -> str:
         return initials_signature(self.author_name)
 
+    # ------------------------------------------------------- этап (v39)
+
+    def stage(self) -> str:
+        """Этап постановления: первичное решение или итоговое (v39).
+
+        Пользователь: «"Вид решения" должен состоять из 2 частей: первая —
+        принять или отказать в обращении по регламенту, вторая — вид санкции,
+        который ИИ определяет сам по "Обстоятельствам"». Этап задаётся явно
+        (`doc_stage`), а если поле пусто — выводится из вида решения.
+        """
+        stage = _clean(self.doc_stage)
+        if stage in (GOV_STAGE_PRIMARY, GOV_STAGE_FINAL):
+            return stage
+        return gov_stage(self.get("doc_type"))
+
+    def is_final(self) -> bool:
+        """Итоговое постановление по существу (санкция, этап 2)."""
+        return self.stage() == GOV_STAGE_FINAL
+
+    def stage_title(self) -> str:
+        """Человеческая подпись этапа (для формы и заявки)."""
+        return GOV_STAGE_TITLES[self.stage()]
+
     def title(self) -> str:
+        """Заголовок бланка. Заглушка «Определит ИИ …» в PNG не печатается.
+
+        v41: если вид решения ещё не выбран, берём первый вид своего этапа.
+        Здесь НЕ вызывается `suggest_doc_type` — он сам опирается на
+        резолюцию, а резолюция зависит от заголовка (была рекурсия).
+        """
         doc_type = self.get("doc_type")
+        if is_auto_type(doc_type):
+            doc_type = stage_types(self.stage())[0]
         return doc_type or GOV_DOC_TYPES[0]
 
     def document_title(self) -> str:
@@ -608,9 +1186,27 @@ class PostanovlenieProkurora:
 
     # ------------------------------------------------------------- текст
 
+    #: Слова, по которым видно, что в «Должности» стоит должность прокуратуры.
+    GOV_RANK_MARKS = ("прокурор", "attorney", "генеральн", "юстиц")
+
+    def person_rank(self) -> str:
+        """Должность подписанта глазами бланка прокуратуры (v38).
+
+        В шаблоне у персонажа может стоять «Куратор отдела IAD (Assistent
+        sheriff), Сенатор» — в постановлении Прокурора такая подпись выглядит
+        ошибкой (выгрузка AG-1). Если в должности нет слова «прокурор»,
+        печатаем «Прокурор штата Сан-Андреас», а исходную должность оставляем
+        в поле `author_rank` для истории.
+        """
+        rank = _clean(self.get("author_rank"))
+        low = rank.lower()
+        if rank and any(mark in low for mark in self.GOV_RANK_MARKS):
+            return rank
+        return "Прокурор"
+
     def preamble(self) -> str:
         """Вводная часть «Я, Прокурор …, рассмотрев обращение …»."""
-        rank = self.get("author_rank") or "Прокурор"
+        rank = self.person_rank()
         name = self.get("author_name")
         who = f"{rank} штата Сан-Андреас" if "штата" not in rank.lower() else rank
         if name:
@@ -618,20 +1214,57 @@ class PostanovlenieProkurora:
         ident = self.get("author_id")
         if ident:
             who = f"{who}, удостоверение № {ident}"
-        basis = ", ".join(GOV_PREAMBLE_BASIS[:2])
-        tail = GOV_PREAMBLE_BASIS[2]
+        # v42 (замечание «много захардкоженной нормативной базы»): если ИИ
+        # прислал нормы вводной части — печатаем ИХ. Зашитый перечень
+        # остаётся запасным вариантом, когда ИИ норм не дал.
+        custom = strip_field_label_leaks(self.get("preamble_basis"))
+        if custom:
+            basis = custom.rstrip(" ,;")
+            tail = ""
+        else:
+            basis = ", ".join(GOV_PREAMBLE_BASIS[:2])
+            tail = GOV_PREAMBLE_BASIS[2]
         applicant = self.get("applicant_name") or "гражданина"
         appeal_date = self.get("appeal_date") or self.get("doc_date")
         if applicant.lower().startswith(("граждан", "сотрудник")):
             applicant_phrase = applicant
         else:
             applicant_phrase = f"гражданина {applicant}"
+        if not tail:
+            return (
+                f"Я, {who}, руководствуясь {basis}, "
+                f"рассмотрев обращение {applicant_phrase}"
+                + (f" от {appeal_date}" if appeal_date else "")
+                + ","
+            )
         return (
             f"Я, {who}, руководствуясь {basis}, а также {tail}, "
             f"рассмотрев обращение {applicant_phrase}"
             + (f" от {appeal_date}" if appeal_date else "")
             + ","
         )
+
+    def redirect_target(self) -> str:
+        """Куда переадресовать обращение (Регламент, ст. 19, ч. 1).
+
+        Возвращает «следственное подразделение <орган>» / «дисциплинарное
+        подразделение <орган>» / «Intelligence Branch (IB) Федерального
+        Расследовательского Бюро» — по ведомству нарушителя из обращения.
+        """
+        department = self.get("subject_department") or ""
+        low = department.lower()
+        body = ""
+        for name in ("FIB", "LSPD", "LSCSD", "SANG", "USSS", "EMS", "Weazel"):
+            if name.lower() in low:
+                body = name
+                break
+        if not body:
+            return ""
+        if body == "FIB":
+            return "Intelligence Branch (IB) Федерального Расследовательского Бюро"
+        kind = "дисциплинарное" if re.search(r"(жалоб|этическ|дресс|поведен)", 
+                                             self.get("situation").lower()) else "следственное"
+        return f"{kind} подразделение {body}"
 
     def appeal_point(self) -> str:
         """Пункт о порядке обжалования (статьи 27–28 Регламента)."""
@@ -704,33 +1337,80 @@ class PostanovlenieProkurora:
         return "\n".join(lines)
 
     def _prosecutor_own_facts(self) -> bool:
-        """«Обстоятельства» заполнены прокурором по видеофиксации, а не бланком."""
-        situation = strip_placeholder_clauses(scrub_chat_text(self.get("situation")))
+        """«Обстоятельства» заполнены прокурором по видеофиксации, а не бланком.
+
+        v40 (выгрузка AG-1): пользователь вставил обращение в поле
+        «Обстоятельства», и `prosecutor_facts` (копия этого поля) считался
+        «своими фактами прокурора» — из-за этого в «УСТАНОВИЛ» подряд шли и
+        пересказ ИИ, и сырой пересказ заявителя. Теперь:
+        * бланк обращения в «Обстоятельствах» — это НЕ факты прокурора;
+        * текст, совпадающий с описанием ситуации из обращения, — тоже нет;
+        * пересказ заявителя дублируется только если прокурор действительно
+          написал что-то своё (тайм-коды, видеофиксацию) и в «УСТАНОВИЛ» ещё
+          нет этого описания.
+        """
+        situation = strip_doc_type_tail(strip_field_label_leaks(
+            strip_placeholder_clauses(scrub_chat_text(self.get("situation")))))
         if not situation:
             return False
-        if self.prosecutor_facts:
-            return True
-        description = self.appeal_situation
-        if description and _key(situation) == _key(description):
+        # Бланк обращения («От:», «1. Данные о заявителе» …) — не описание
+        # прокурором увиденного.
+        if looks_like_appeal_form(situation):
             return False
-        return not looks_like_appeal_form(situation)
+        description = self.appeal_situation
+        if description:
+            key_situation, key_description = _key(situation), _key(description)
+            if key_situation and (key_situation == key_description
+                                  or key_situation in key_description
+                                  or key_description in key_situation):
+                return False
+        if self.prosecutor_facts:
+            # В «Обстоятельства» лежит ровно то же, что в обращении → это
+            # пересказ заявителя, а не работа прокурора с видеофиксацией.
+            return not self._facts_repeat_appeal()
+        return True
+
+    def _facts_repeat_appeal(self) -> bool:
+        """Текст «Обстоятельств» повторяет описание ситуации из обращения."""
+        situation = _key(strip_field_label_leaks(strip_placeholder_clauses(
+            scrub_chat_text(self.get("situation")))))
+        description = _key(self.appeal_situation)
+        if not situation or not description:
+            return False
+        if situation == description or situation in description:
+            return True
+        # Сравнение по словам: ИИ/пользователь мог слегка переписать текст.
+        words_situation = set(re.findall(r"[а-яёa-z]{4,}", situation))
+        words_description = set(re.findall(r"[а-яёa-z]{4,}", description))
+        if not words_situation or not words_description:
+            return False
+        overlap = len(words_situation & words_description) / len(words_situation)
+        return overlap >= 0.6
 
     def facts_text(self) -> str:
         """«УСТАНОВИЛ» — фактические обстоятельства дела."""
         parts: list = []
         # v37: если в «Обстоятельства» вставили бланк обращения — берём из него
         # только описание ситуации; остальные реквизиты уже в своих полях.
-        situation = strip_placeholder_clauses(scrub_chat_text(self.get("situation")))
+        situation = strip_doc_type_tail(strip_field_label_leaks(
+            strip_placeholder_clauses(scrub_chat_text(self.get("situation")))))
         if looks_like_appeal_form(situation):
             # В «Обстоятельства» вставили бланк обращения целиком — в документ
             # идёт только пункт «Подробное описание ситуации», остальные
             # реквизиты уже разложены по полям (v37).
             situation = parse_appeal_text(situation).get("description", "")
-        established = strip_placeholder_clauses(scrub_chat_text(self.get("established")))
+        established = strip_field_label_leaks(
+            strip_placeholder_clauses(scrub_chat_text(self.get("established"))))
         # v37 (вторая итерация): в выгрузке AG-2 «УСТАНОВИЛ» сначала шёл текст
         # ИИ по обращению, а следом целиком повторялся пересказ заявителя из
         # пункта 5. Повторяем его только тогда, когда «УСТАНОВИЛ» пуст.
         if established and situation and not self._prosecutor_own_facts():
+            situation = ""
+        # v40: пересказ заявителя из пункта 5 печатается только тогда, когда
+        # «УСТАНОВИЛ» ИИ пуст ИЛИ прокурор дал свои факты с тайм-кодами.
+        # Если ИИ уже пересказал обращение своими словами — второй абзац
+        # сырого текста заявителя в бланке недопустим (выгрузка AG-1).
+        if established and situation and self._facts_repeat_appeal():
             situation = ""
         # Порядок: сначала факты прокурора по видеофиксации, затем правовая
         # оценка ИИ — иначе «УСТАНОВИЛ» заканчивался выводом и снова начинался
@@ -749,7 +1429,11 @@ class PostanovlenieProkurora:
             date_part = m.group(1)
         need_when = bool(when) and when.lower() not in joined \
             and (not date_part or date_part not in joined)
-        need_place = bool(place) and not _covered(place, joined)
+        # v41: место события — часть фразы, а не ярлык бланка. «Место события:
+        # здание EMS…» в тексте «УСТАНОВИЛ» — это реквизит шапки (пользователь:
+        # «лишняя информация, её быть не должно»), поэтому подставляем его
+        # только внутри предложения «Событие имело место».
+        need_place = bool(place) and not _covered(place, joined) and need_when
         # «в ходе служебной деятельности» — не место события, а описание
         # процесса: такие заглушки выбрасываем ещё до вставки в текст.
         if need_when and need_place:
@@ -757,16 +1441,32 @@ class PostanovlenieProkurora:
         elif need_when:
             parts.insert(0, f"Событие имело место: {when}.")
         elif need_place:
-            parts.insert(0, f"Место события: {place}.")
+            # Без даты — всё равно фразой, без ярлыка «Место события:».
+            parts.insert(0, f"Событие имело место по адресу: {place}.")
 
         # «Указанные обстоятельства образуют нарушение: по обстоятельствам,
         # указанным в заявке» — заглушка, в документе её печатать нельзя.
         clause = "" if is_vague_clause(self.get("violation_clause")) \
             else self.get("violation_clause")
+        if is_placeholder(clause):
+            clause = ""
         act = self.get("violation_act")
-        if clause or act:
-            phrase = " ".join(x for x in (clause_genitive(clause) if clause else "",
-                                          act_genitive(act) if act else "") if x)
+        if is_placeholder(act):
+            act = ""
+        # v40 (выгрузка AG-1): при отказе в удовлетворении «Пункт нарушения» и
+        # «Нарушенный акт» — это НЕ нарушение, а процедурная норма, по которой
+        # отказано («Регламент подачи обращений»). В «УСТАНОВИЛ» появлялось
+        # «Указанные обстоятельства образуют нарушение: Регламента подачи
+        # обращений …». Фраза нужна только там, где нарушение действительно
+        # вменяется: есть конкретная статья/пункт нарушенного акта.
+        # v41 (AG-2): ИИ сам пишет «Указанные обстоятельства образуют
+        # нарушение …» внутри «УСТАНОВИЛ» — второй такой фразы в конце не
+        # нужно, это дубль вывода.
+        already_offence = "образуют нарушение" in " ".join(parts).lower()
+        if clause and not already_offence and (act or not self._ends_without_offence()):
+            norm = clause_genitive(clause)
+            extra = acts_not_named(clause, act) if act else ""
+            phrase = " ".join(x for x in (norm, extra) if x)
             if phrase:
                 parts.append(f"Указанные обстоятельства образуют нарушение: {phrase}.")
 
@@ -782,7 +1482,9 @@ class PostanovlenieProkurora:
                     evidence = ""
             if evidence and not _covered(evidence, already):
                 parts.append(f"В подтверждение представлено: {evidence}.")
-        return " ".join(p.strip() for p in parts if p.strip())
+        # v41 (AG-2): «… никак не реагирует Гражданин Lordik Claw обратился…» —
+        # части склеивались, если ИИ не поставил точку в конце «Обстоятельств».
+        return " ".join(_end_sentence(p.strip()) for p in parts if p.strip())
 
     def decision_points(self) -> list:
         """Резолюция. Если ИИ не прислал пункты — собираем по виду решения."""
@@ -790,15 +1492,33 @@ class PostanovlenieProkurora:
             return list(self.points)
         applicant = self.get("applicant_name") or "заявителя"
         ident = self.get("applicant_id")
+        if is_placeholder(ident):
+            ident = ""
         applicant_ref = f"{applicant} (ID-карта № {ident})" if ident else applicant
         appeal = self.get("appeal_number")
         appeal_ref = f" № {appeal}" if appeal else ""
-        subject = self.get("subject_name")
+        subject = "" if is_placeholder(self.get("subject_name")) else self.get("subject_name")
         subject_ref = subject
-        if subject and self.get("subject_id"):
-            subject_ref = f"{subject} (ID № {self.get('subject_id')})"
-        low = self.get("doc_type").lower()
+        subject_id = "" if is_placeholder(self.get("subject_id")) else self.get("subject_id")
+        if subject and subject_id:
+            subject_ref = f"{subject} (ID № {subject_id})"
+        low = self.title().lower()
         points: list = []
+        # v39: этап 2 — «отказ в удовлетворении обращения» (п. «б» ч. 1 ст. 23
+        # Регламента) отличается от первичного «отказа в принятии» (ст. 16):
+        # обращение рассмотрено по существу, но доказательств не хватило.
+        if "удовлетвор" in low:
+            points.append(f"В удовлетворении обращения {applicant_ref} отказать "
+                          "ввиду недостаточности представленных доказательств "
+                          "(пункт «б» части 1 статьи 23 Регламента подачи обращений "
+                          "в Офис Генерального прокурора).")
+            reason = self.get("legal_basis") or self.get("violation_clause")
+            if reason:
+                points.append(f"Основание: {reason}.")
+            points.append("Настоящее постановление вступает в законную силу с "
+                          "момента подписания и публикации.")
+            points.append(self.appeal_point())
+            return points
         if "отказ" in low:
             points.append(f"Отказать в принятии обращения {applicant_ref} "
                           f"к рассмотрению.")
@@ -813,17 +1533,35 @@ class PostanovlenieProkurora:
                           "не превышающий 72 часа (статья 28 Регламента подачи "
                           "обращений в Офис Генерального прокурора).")
             return points
+        if "завершен" in low:
+            points.append(f"Завершить проверку по обращению {applicant_ref}.")
+            points.append("Передать материалы проверки в уголовное производство "
+                          "в порядке, установленном Процессуальным кодексом "
+                          "штата Сан-Андреас.")
+            points.append("Уведомить заявителя о результатах проверки.")
+            points.append(self.appeal_point())
+            return points
         if "привлеч" in low:
+            # v39: без ФИО нарушителя резолюция раньше оставалась вообще без
+            # санкции — только «вступает в силу» и «может быть обжаловано».
+            norm = ("" if is_vague_clause(self.get("violation_clause"))
+                    else self.get("violation_clause")) or "законодательства штата"
             if subject_ref:
                 points.append(f"Признать {subject_ref} виновным в нарушении "
-                              f"{self.get('violation_clause') or 'законодательства штата'}.")
+                              f"{norm}.")
+            else:
+                points.append("Привлечь установленное лицо к административной "
+                              f"ответственности за нарушение {norm}.")
             if self.get("penalty"):
                 points.append(f"Назначить наказание: {self.get('penalty')}.")
+            else:
+                points.append("Назначить административное наказание в пределах "
+                              "санкции нормы, указанной в основании.")
             points.append("Настоящее постановление вступает в законную силу с "
                           "момента подписания и публикации.")
             points.append(self.appeal_point())
             return points
-        if "уголовное дело" in low or "передаче материалов" in low:
+        if re.search(r"уголовн", low):
             points.append("Возбудить уголовное производство по изложенным "
                           "обстоятельствам в отношении "
                           f"{subject_ref or 'установленных лиц'}.")
@@ -832,9 +1570,34 @@ class PostanovlenieProkurora:
             points.append("Настоящее постановление вступает в законную силу с "
                           "момента подписания и публикации.")
             return points
+        if "прокурорского реагирования" in low:
+            points.append("Применить меры прокурорского реагирования по "
+                          "изложенным обстоятельствам в порядке статей 9–9.3 "
+                          "Закона «О деятельности офиса Генерального прокурора "
+                          "штата San-Andreas».")
+            if self.get("violation_clause"):
+                points.append("Внести представление об устранении нарушений "
+                              "закона: " + self.get("violation_clause") + ".")
+            points.append("Уведомить заявителя о принятых мерах.")
+            points.append(self.appeal_point())
+            return points
+        if "в суд" in low:
+            points.append("Передать материалы обращения и проверки в Окружной "
+                          "суд штата Сан-Андреас для рассмотрения по существу "
+                          "(пункт «в» части 1 статьи 23 Регламента подачи "
+                          "обращений).")
+            points.append("Уведомить заявителя о передаче материалов в суд.")
+            points.append(self.appeal_point())
+            return points
         if "переадрес" in low:
             points.append(f"Переадресовать обращение {applicant_ref} по "
                           "подведомственности.")
+            # v39: Регламент, ст. 19 — переадресация идёт в следственное или
+            # дисциплинарное подразделение органа либо в IB FIB, а не «в воздух».
+            target = self.redirect_target()
+            if target:
+                points.append(f"Направить обращение в {target} для проведения "
+                              "служебной проверки по изложенным обстоятельствам.")
             points.append("Уведомить заявителя о переадресации обращения.")
             points.append(self.appeal_point())
             return points
@@ -881,15 +1644,34 @@ class PostanovlenieProkurora:
                 if tail and len(tail) > 3:
                     clause += f" ({tail.strip(' .')})"
             parts.append(clause)
-            # «статьи 8, 10, 11» без названия акта ничего не говорит читателю
-            if act and act.lower() not in clause.lower():
-                parts.append(act)
+            # «статьи 8, 10, 11» без названия акта ничего не говорит читателю,
+            # но и повторять уже названный в норме акт нельзя (v39).
+            if act:
+                missing_acts = acts_not_named(clause, act)
+                if missing_acts:
+                    parts.append(missing_acts)
         elif self.get("violation_act"):
             parts.append(self.get("violation_act"))
         legal = self.get("legal_basis")
         if legal and legal.lower() not in " ".join(parts).lower():
             parts.append(legal)
-        return "; ".join(p.strip(" ;,") for p in parts if p.strip(" ;,"))
+        joined = "; ".join(p.strip(" ;,") for p in parts if p.strip(" ;,"))
+        # v38 (выгрузка AG-2): название акта повторялось в «Основании» трижды —
+        # «статьи 16.4 Уголовного кодекса …, …; Уголовный Кодекс штата
+        # Сан-Андреас, Процессуальный кодекс …». Оставляем первое упоминание.
+        return _drop_repeated_acts(joined)
+
+    def _ends_without_offence(self) -> bool:
+        """Итоговое решение не вменяет нарушения (отказ, завершение проверки).
+
+        В этих постановлениях «Нарушенный акт»/«Пункт нарушения» — либо
+        процедурная норма отказа, либо пусто, и печатать «образуют нарушение»
+        нельзя (v40, выгрузка AG-1).
+        """
+        low = self.title().lower()
+        return any(mark in low for mark in ("отказе в удовлетворении",
+                                            "завершении проверки",
+                                            "прекращении производства"))
 
     def missing_fields(self) -> list:
         """Обязательные реквизиты постановления (v37).
@@ -926,7 +1708,8 @@ class PostanovlenieProkurora:
         data = data or {}
         allowed = {key for key, _f, _l in GOV_FIELDS} | {
             "points", "created_at", "source", "established", "appeal_raw",
-            "prosecutor_facts", "appeal_situation"}
+            "prosecutor_facts", "appeal_situation", "preamble_basis",
+            "case_number", "case_stage_kind"}
         kwargs = {k: v for k, v in data.items() if k in allowed}
         doc = cls(**kwargs)
         doc.points = [_clean(p) for p in (data.get("points") or []) if _clean(p)]
@@ -942,6 +1725,11 @@ class PostanovlenieProkurora:
         lines = ["ЗАЯВКА НА ПОСТАНОВЛЕНИЕ ПРОКУРОРА"]
         lines.append("Данные для подготовки документа:")
         self._ensure_derived_fields()
+        # v39: вид решения — из двух частей. Этап печатаем ПЕРВОЙ строкой и
+        # сразу раскрываем, что именно проверять (первичное решение по форме
+        # обращения или итоговая санкция по обстоятельствам).
+        stage = self.stage()
+        lines.append(f"Этап: {GOV_STAGE_TITLES[stage]}")
         for key, _form, label in GOV_CHAT_FIELDS:
             value = self.get(key)
             if not value:
@@ -949,6 +1737,7 @@ class PostanovlenieProkurora:
             if key == "appeal_raw":
                 continue
             lines.append(f"{label}: {value}")
+        lines.append(GOV_STAGE_GUIDE[stage])
         appeal = self.get("appeal_raw")
         if appeal:
             lines.append("")
@@ -1026,6 +1815,45 @@ class PostanovlenieProkurora:
         return data
 
 
+class GovHistory(base.DocumentHistory):
+    """История постановлений Прокурора — своя папка и свой загрузчик (v41).
+
+    Ошибка из логов (`AttributeError` в `set_document`): история была общей на
+    два вида документов, и запись Прокурора грузилась моделью IAD — у неё нет
+    ни `stage()`, ни `facts_text()`, поэтому «Загрузить в форму» падал.
+    Теперь загрузчик — `PostanovlenieProkurora`, а сами записи лежат в
+    `postanovleniya/history/gov/`.
+    """
+
+    KIND = base.HISTORY_KIND_GOV
+
+    def _parse(self, data: dict):
+        return PostanovlenieProkurora.from_dict(data)
+
+    def _belongs(self, data: dict) -> bool:
+        """Запись — постановление Прокурора, а не IAD.
+
+        Признаки: поле `doc_stage`/`prosecutor_facts`/`appeal_raw` (их пишет
+        только модель Прокурора) либо номер с префиксом «AG».
+        """
+        if not isinstance(data, dict):
+            return False
+        if any(key in data for key in ("doc_stage", "prosecutor_facts",
+                                       "appeal_raw", "prosecutor_rank")):
+            return True
+        number = str(data.get("doc_number") or "").strip().upper()
+        if number.startswith("AG"):
+            return True
+        # Совсем старые записи без служебных полей: у IAD-бланка есть
+        # «взыскание»/«пункт нарушения» и нет «вида решения» Прокурора.
+        return False
+
+
+def gov_history(folder) -> GovHistory:
+    """Готовая история постановлений Прокурора для формы и main.py."""
+    return GovHistory(folder, kind=base.HISTORY_KIND_GOV)
+
+
 # --------------------------------------------------------------------------- #
 #  Разбор ответа ИИ
 # --------------------------------------------------------------------------- #
@@ -1046,9 +1874,14 @@ def is_signature_line(line: str) -> bool:
     if not text:
         return False
     low = text.lower()
-    if "удостоверение" in low or low.startswith(("подпись", "должность")):
+    # v38: «Принять обращение … (удостоверение № 171034) к собственному
+    # производству …» — это ПУНКТ резолюции, а не строка подписи. Раньше
+    # проверка на слово «удостоверение» съедала первый пункт (выгрузка AG-1).
+    short = len(text) <= 90 and len(text.split()) <= 8
+    if short and (low.startswith(("удостоверение", "подпись", "должность"))
+                  or "удостоверение №" in low and len(text.split()) <= 5):
         return True
-    if low.startswith("прокурор") and "постановил" not in low:
+    if short and low.startswith("прокурор") and "постановил" not in low:
         return True
     # «И. Рейн», «Jonathan Raine» — ФИО из 2–3 слов без глаголов приказа.
     words = text.split()
@@ -1061,10 +1894,109 @@ def is_signature_line(line: str) -> bool:
     return False
 
 
+#: Опечатки, которые ИИ повторяет из раза в раз (выгрузка v38:
+#: «Возбудить прокуроровское производство»).
+_GOV_TYPOS: tuple[tuple[str, str], ...] = (
+    (r"\bпрокуроровск([а-яё]*)\b", r"прокурорск\1"),
+)
+
+
+def fix_gov_typos(text: str) -> str:
+    """Убирает повторяющиеся опечатки ИИ («прокуроровское производство»)."""
+    result = str(text or "")
+    for pattern, replacement in _GOV_TYPOS:
+        result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+    return result
+
+
 def strip_signature_points(points: list) -> list:
     """Убирает пункты-подписи из резолюции (v37)."""
     kept = [p for p in points or [] if p and not is_signature_line(p)]
     return kept
+
+
+#: Ключи служебного блока проверки обращения (v42) и их синонимы.
+_INTAKE_KEY_ALIASES: dict = {
+    "состояние": "state", "решение": "state", "итог": "state",
+    "принято": "state", "статус": "state",
+    "основание": "basis", "основание отказа": "basis",
+    "норма": "basis", "пункт": "basis",
+    "вид решения": "doc_type", "вид документа": "doc_type",
+    "что проверить": "todo", "рекомендация": "todo",
+    "уверенность": "confidence",
+}
+
+_INTAKE_MARKERS = ("ПРОВЕРКАОБРАЩЕНИЯ", "ПРОВЕРКА ОБРАЩЕНИЯ")
+
+
+def has_intake_block(text: str) -> bool:
+    """В ответе ИИ есть служебный блок проверки обращения (v42)."""
+    compact = re.sub(r"[\s=*_\-—]+", "", str(text or "")).upper()
+    return "ПРОВЕРКАОБРАЩЕНИЯ" in compact
+
+
+def parse_intake_answer(answer_text: str) -> dict:
+    """Разбирает ответ ИИ на «Проверку ИИ»: принято или отказано (v42).
+
+    Клиент не должен «угадывать» состояние обращения по свободному тексту:
+    ИИ отвечает служебным блоком `===ПРОВЕРКА ОБРАЩЕНИЯ===`, из которого
+    берутся состояние, основание и вид решения. Если блока нет, разбор
+    возвращает `ok=False` — состояние дела не меняется.
+    """
+    raw = str(answer_text or "")
+    fields: dict = {}
+    in_block = False
+    for line in raw.splitlines():
+        plain = strip_markdown(line.strip()).strip("*").strip()
+        compact = re.sub(r"[\s=*_\-—]+", "", plain.upper())
+        if "ПРОВЕРКАОБРАЩЕНИЯ" in compact:
+            in_block = True
+            continue
+        if "КОНЕЦПРОВЕРКИ" in compact:
+            in_block = False
+            continue
+        if not in_block or ":" not in plain:
+            continue
+        key, value = plain.split(":", 1)
+        key = re.sub(r"^[\d.)\-\s]+", "", key).strip().lower()
+        target = _INTAKE_KEY_ALIASES.get(key)
+        if target and strip_markdown(value).strip():
+            fields[target] = strip_markdown(value).strip()
+    state = normalize_intake_state(fields.get("state", ""))
+    if not state:
+        # Блок мог прийти без ключа «Состояние» — смотрим свободный текст
+        # внутри блока и первую строку после маркера.
+        body = raw.replace("===ПРОВЕРКА ОБРАЩЕНИЯ===", " ")
+        state = normalize_intake_state(strip_markdown(body)[:600])
+    result = {
+        "state": state,
+        "basis": fields.get("basis", ""),
+        "doc_type": normalize_gov_doc_type(fields.get("doc_type", "")),
+        "doc_type_raw": fields.get("doc_type", ""),
+        "todo": fields.get("todo", ""),
+        "confidence": fields.get("confidence", ""),
+        "raw": raw,
+        "ok": bool(state),
+    }
+    return result
+
+
+def normalize_intake_state(value: str) -> str:
+    """Приводит состояние обращения к «Принято» / «Отказано» / … (v42)."""
+    text = _clean(value).lower().strip(" .:;")
+    if not text:
+        return ""
+    if re.search(r"отказ\w*\s+в\s+принят|в\s+принятии\s+(обращения\s+)?отказан", text):
+        return INTAKE_REFUSED
+    if text.startswith(("отказ", "отказан")):
+        return INTAKE_REFUSED
+    if re.search(r"переадрес", text):
+        return INTAKE_REDIRECTED
+    if re.search(r"прекращ", text):
+        return INTAKE_TERMINATED
+    if text.startswith(("принят", "принима", "принять")) or "принято" in text:
+        return INTAKE_ACCEPTED
+    return ""
 
 
 def parse_gov_answer(answer_text: str, base_doc: PostanovlenieProkurora | None = None, base=None):
@@ -1170,11 +2102,12 @@ def parse_gov_answer(answer_text: str, base_doc: PostanovlenieProkurora | None =
                 saw_content = True
 
     if points:
-        doc.points = strip_signature_points(points)
+        doc.points = [fix_gov_typos(p) for p in strip_signature_points(points)]
     if facts_lines:
         # Раздел «УСТАНОВИЛ» — это выводы прокурора, а не «Обстоятельства»:
         # раньше он приклеивался к обстоятельствам и печатался дважды.
-        doc.established = " ".join(f.strip() for f in facts_lines if f.strip())
+        doc.established = fix_gov_typos(
+            " ".join(f.strip() for f in facts_lines if f.strip()))
     if free_lines:
         joined = "\n".join(free_lines).strip()
         if not doc.get("situation"):
@@ -1227,8 +2160,32 @@ def parse_gov_answer(answer_text: str, base_doc: PostanovlenieProkurora | None =
         return None
     if not doc.get("doc_date"):
         doc.doc_date = today_ru()
-    if not doc.get("doc_type"):
-        doc.doc_type = GOV_DOC_TYPES[0]
+    # v39: вид решения — всегда один из GOV_DOC_TYPES. ИИ отвечает свободной
+    # формулировкой («Постановление об отказе в рассмотрении обращения»), а
+    # заголовок бланка и проверки ждут каноническое название.
+    stage = normalize_stage(doc.get("doc_stage"))
+    if not stage and base_doc is not None:
+        stage = normalize_stage(base_doc.get("doc_stage"))
+    if not stage and base_doc is not None:
+        stage = gov_stage(base_doc.get("doc_type"))
+    normalized = normalize_gov_doc_type(doc.get("doc_type"), stage)
+    auto = (base_doc is not None and is_auto_type(base_doc.get("doc_type")))
+    if auto and (not normalized or gov_stage(normalized) != stage):
+        # В форме выбрано «Определит ИИ …» (этап 1 — по обращению, этап 2 — по
+        # обстоятельствам). Если ИИ прислал вид решения ЧУЖОГО этапа (на этапе
+        # санкции — «О принятии обращения к производству»), доверяем
+        # обстоятельствам и резолюции, а не полю.
+        normalized = suggest_doc_type(doc)
+    if normalized:
+        doc.doc_type = normalized
+    elif not doc.get("doc_type"):
+        doc.doc_type = stage_types(stage)[0]
+    # Этап: выбор пользователя в форме неприкосновенен. Если он не задан —
+    # выводим из вида решения. Когда ИИ «съехал» на другой этап (на итоговом
+    # этапе прислал «О принятии обращения к производству»), этап НЕ
+    # переписываем — расхождение поймает check_gov_document и покажет
+    # пользователю, что санкции в ответе нет.
+    doc.doc_stage = stage or gov_stage(doc.get("doc_type"))
     return doc
 
 
@@ -1284,8 +2241,9 @@ def check_gov_document(doc: PostanovlenieProkurora) -> list:
                 "допускает не более 24 часов на принятие к рассмотрению и не "
                 "более 72 часов на рассмотрение по существу.")
 
-    # 3. Отказ без основания (ст. 16 Регламента).
-    low_type = doc.get("doc_type").lower()
+    # 3. Отказ без основания (ст. 16 Регламента). Вид — без заглушки
+    #    «Определит ИИ …»: иначе проверки не видят, что это отказ (v41).
+    low_type = doc.title().lower()
     if "отказ" in low_type:
         # основание отказа может быть указано и в самой резолюции («Основание
         # отказа: пункт 1 статьи 16 Регламента»), поэтому её тоже учитываем
@@ -1362,6 +2320,43 @@ def check_gov_document(doc: PostanovlenieProkurora) -> list:
                 "постановление опирается на факты, которых в обращении нет. "
                 "Попросите заявителя описать событие или укажите это как "
                 "основание для запроса дополнительных материалов.")
+
+    # 9.1. v39: этап и вид решения должны быть согласованы. Если выбран
+    #      итоговый этап, а в резолюции «принять обращение к производству» —
+    #      документ противоречит сам себе.
+    resolution_all = " ".join(doc.decision_points()).lower()
+    sanction_marks = ("признать", "привлечь", "назначить", "возбудить", "передать", "передаче",
+                      "применить меры", "в удовлетворении", "отказать в удовлетворении",
+                      "завершить проверку", "внести представление")
+    if doc.is_final() and not any(mark in resolution_all for mark in sanction_marks):
+        issues.append(
+            "Вид решения — итоговое (этап 2), а резолюция только принимает "
+            "обращение к рассмотрению. Итоговое постановление должно содержать "
+            "санкцию по статье 23 Регламента: привлечение к ответственности, "
+            "возбуждение уголовного дела, передача материалов в суд, меры "
+            "прокурорского реагирования или отказ в удовлетворении обращения.")
+    if not doc.is_final() and re.search(r"возбудить\s+уголовн|назначить\s+(наказание|"
+                                        r"административн|штраф)", resolution_all):
+        issues.append(
+            "Вид решения — первичный (этап 1: принятие, отказ, переадресация, "
+            "прекращение), но в резолюции назначается санкция. На этапе "
+            "первичного рассмотрения санкция не назначается — она выносится "
+            "отдельным постановлением по существу (статья 23 Регламента).")
+
+    # 9.2. v39: санкция без нормы ответственности. «Признать виновным» и
+    #      «назначить штраф» без статьи — это резолюция без права.
+    if doc.is_final() and doc.get("doc_type") in (
+            "О привлечении к административной ответственности",
+            "О возбуждении уголовного дела по обращению"):
+        qualification = " ".join((
+            doc.get("violation_clause"), doc.get("violation_act"),
+            doc.get("legal_basis"), doc.get("penalty"))).lower()
+        if not re.search(r"(стат|пункт|част|ст\.)", qualification):
+            issues.append(
+                "Итоговое постановление о привлечении к ответственности не "
+                "содержит нормы, устанавливающей ответственность (статья "
+                "кодекса / пункт устава). Без неё санкция не имеет правового "
+                "основания.")
 
     # 10. Заглушки вместо правовой оценки (v37).
     if is_placeholder(doc.get("violation_clause")) and doc.get("violation_clause"):

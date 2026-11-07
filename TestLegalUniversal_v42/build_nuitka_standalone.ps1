@@ -1,5 +1,5 @@
 # =============================================================================
-#  Legalyze v37 — сборка Nuitka (standalone), PowerShell
+#  Legalyze v38 — сборка Nuitka (standalone), PowerShell
 # -----------------------------------------------------------------------------
 #  Запуск из папки версии:
 #      powershell -NoProfile -ExecutionPolicy Bypass -File .\build_nuitka_standalone.ps1
@@ -151,8 +151,8 @@ $buildArgs = @(
     "--product-name=Legalyze",
     "--file-description=Legalyze",
     "--company-name=Legalyze",
-    "--file-version=1.3.0.0",
-    "--product-version=1.3.0.0",
+    "--file-version=1.8.0.0",
+    "--product-version=1.8.0.0",
     "--copyright=Legalyze",
     "--report=build/nuitka-report.xml",
     "--output-dir=build",
