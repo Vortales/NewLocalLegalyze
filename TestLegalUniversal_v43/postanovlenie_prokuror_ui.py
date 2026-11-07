@@ -1282,9 +1282,16 @@ class PostanovlenieProkuroraDialog(QDialog):
                 continue
             doc.set(key, widget.toPlainText().strip())
         # «Обстоятельства» прокурора: видеофиксация, доводы, предложение и
-        # решение — одним текстом для «УСТАНОВИЛ» (v42).
-        doc.prosecutor_facts = self.case.prosecutor_facts()
-        doc.set("situation", doc.prosecutor_facts)
+        # решение — одним текстом для «УСТАНОВИЛ» (v42). v43: на этапах, где
+        # обстоятельства не нужны (принятие, переадресация, прекращение), в
+        # документ они не попадают — иначе решение по форме обращения
+        # превращалось в решение по существу.
+        kind_now = self._stage_kind()
+        if cases.stage_meta(kind_now)["needs_facts"] and self.case.has_facts():
+            doc.prosecutor_facts = self.case.prosecutor_facts()
+            doc.set("situation", doc.prosecutor_facts)
+        else:
+            doc.prosecutor_facts = ""
         # Дело: прокурор видит, к какому обращению относится документ, а имя
         # файла получает этап — PNG прошлых этапов не заменяются (v42).
         doc.appeal_raw = self.case.appeal_raw

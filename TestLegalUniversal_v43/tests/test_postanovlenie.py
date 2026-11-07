@@ -3387,3 +3387,22 @@ class V43RenderFolderTests(unittest.TestCase):
                              self.c.stage_folder(tmp, "AG-1", 2, self.c.STAGE_MEASURE))
             self.assertNotEqual(first["document"].parent,
                                 second["document"].parent)
+
+
+class V43FactsOnlyWhenNeededTests(unittest.TestCase):
+    """v43: на этапе принятия «Обстоятельства» в бланк не попадают."""
+
+    def test_facts_gate_in_form(self):
+        src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
+        block = src[src.index("def _collect(self)"):]
+        block = block[:block.index("def set_document")]
+        self.assertIn('stage_meta(kind_now)["needs_facts"]', block)
+        self.assertIn("self.case.has_facts()", block)
+
+    def test_stage_meta_flags(self):
+        import gov_case as c
+        for kind in (c.STAGE_INTAKE, c.STAGE_REDIRECT, c.STAGE_CLOSE):
+            self.assertFalse(c.stage_meta(kind)["needs_facts"], kind)
+        for kind in (c.STAGE_MEASURE, c.STAGE_ADDITIONAL, c.STAGE_RECHECK,
+                     c.STAGE_APPEAL):
+            self.assertTrue(c.stage_meta(kind)["needs_facts"], kind)
