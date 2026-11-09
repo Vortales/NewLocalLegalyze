@@ -87,17 +87,65 @@ class OwnAnswerTests(unittest.TestCase):
         self.assertIn("_doc_watch_base_len", block)
         self.assertIn("_chat_text_length()", block)
 
-    def test_poll_requires_new_text(self):
+    def test_poll_never_swallows_the_answer(self):
+        """v44.1: опрос отдаёт ответ ВСЕГДА.
+
+        Проверка «текст чата вырос» выбрасывала настоящий ответ (замер шёл в
+        фоновом потоке, селекторы включали наше сообщение, при сбое замера
+        длина была 0) — отсюда «Ответ с постановлением не пришёл».
+        """
         block = self.src[self.src.index("def _poll_document_answer"):]
         block = block[:block.index("def _documents_root")]
+        # ответ уходит на разбор без условий
+        self.assertIn("self._doc_answer_ready.emit(text)", block)
+        self.assertNotIn("self._doc_answer_ready.emit(text if grown else "")", block)
+        self.assertNotIn("answer_not_new", block)
+        # длина чата остаётся только для журнала
         self.assertIn("JS_CHAT_TEXT_LENGTH", block)
-        self.assertIn("answer_not_new", block)
+        self.assertIn("documents.chat_not_grown", block)
+
+    def test_watch_waits_longer_than_three_minutes(self):
+        block = self.src[self.src.index("def _watch_document_answer"):]
+        block = block[:block.index("def _chat_text_length")]
+        self.assertIn("_doc_watch_hard", block)
+        self.assertIn("900", block)
+        poll = self.src[self.src.index("def _poll_document_answer"):]
+        poll = poll[:poll.index("def _documents_root")]
+        self.assertIn("documents.watch_slow", poll)
+        self.assertIn("documents.watch_timeout", poll)
 
     def test_own_request_is_filtered_first(self):
         block = self.src[self.src.index("def _apply_document_answer"):]
         block = block[:block.index("def _on_gov_intake_requested")]
         self.assertIn("is_own_request", block)
         self.assertLess(block.index("is_own_request"), block.index("_apply_gov_intake"))
+
+    def test_busy_flag_is_cleared_on_every_answer(self):
+        """v44.1: ранний выход не должен навсегда останавливать опрос."""
+        block = self.src[self.src.index("def _apply_document_answer"):]
+        block = block[:block.index("def _on_gov_intake_requested")]
+        first = block.index("self._doc_answer_busy = False")
+        self.assertLess(first, block.index("is_own_request"))
+        self.assertLess(first, block.index("_apply_gov_intake"))
+
+    def test_waiting_mode_follows_the_button(self):
+        """v44.1: «Сформировать» ждёт постановление, «Проверка ИИ» — проверку."""
+        formed = self.src[self.src.index("def _on_document_formed"):]
+        formed = formed[:formed.index("self._document_doc = document")]
+        self.assertIn('self._doc_request_mode = "document"', formed)
+        intake = self.src[self.src.index("def _on_gov_intake_requested"):]
+        intake = intake[:intake.index("def _apply_gov_intake")]
+        self.assertIn('self._doc_request_mode = "intake"', intake)
+        apply_block = self.src[self.src.index("def _apply_document_answer"):]
+        apply_block = apply_block[:apply_block.index("def _on_gov_intake_requested")]
+        self.assertIn("_doc_request_mode", apply_block)
+
+    def test_settled_answer_is_accepted_without_end_marker(self):
+        self.assertIn("def _answer_settled", self.src)
+        for name in ("def _apply_iad_answer", "def _apply_gov_answer"):
+            block = self.src[self.src.index(name):]
+            block = block[:block.index("def ", block.index("has_answer_end"))]
+            self.assertIn("_answer_settled(text)", block, name)
 
     def test_chat_text_js_exists(self):
         self.assertIn("JS_CHAT_TEXT_LENGTH", self.src)
@@ -138,6 +186,25 @@ class IntakeParsingTests(unittest.TestCase):
         request = "ЗАЯВКА НА ПРОВЕРКУ ОБРАЩЕНИЯ (этап 1)\nПрокурор: Jonathan Raine"
         self.assertTrue(pdoc.is_own_request(request, request))
         self.assertFalse(pdoc.is_own_request(self.ANSWER, request))
+
+    def test_long_request_is_own_even_if_answer_is_shorter(self):
+        """v44.1: короткий ответ ИИ не должен отбрасываться как «наша заявка».
+
+        Заявка длиннее ответа, поэтому прежнее условие «текст ненамного
+        длиннее заявки» не выполнялось — и ответ пропадал.
+        """
+        case = cases.GovCase(number="1")
+        case.appeal_raw = "Обращение гражданина Sae Gucci"
+        request = cases.intake_request(case, "Jonathan Raine")
+        self.assertGreater(len(request), 1000)
+        answer = ("===ПРОВЕРКА ОБРАЩЕНИЯ===\nСостояние: Принято\n"
+                  "Основание: обращение соответствует форме\n"
+                  "===КОНЕЦ ПРОВЕРКИ===\n===КОНЕЦ ОТВЕТА===")
+        self.assertFalse(pdoc.is_own_request(answer, request))
+        self.assertFalse(pdoc.is_own_request(answer, ""))
+        # та же заявка целиком — по-прежнему своя
+        self.assertTrue(pdoc.is_own_request(request, request))
+        self.assertTrue(pdoc.is_own_request(request, ""))
 
     def test_request_echo_is_not_taken_for_an_answer(self):
         """Наша заявка не должна приниматься за ответ ИИ (проверка v44)."""
@@ -268,4 +335,6 @@ class ReadAnswerJsTests(unittest.TestCase):
             self.assertIn(selector, self.js)
 
     def test_reply_equal_to_query_is_rejected(self):
-        self.assertIn("reply === said", self.js)
+        self.assertIn("squeeze(reply) === squeeze(said)", self.js)
+        # ответ может цитировать нашу реплику — за это не отбрасываем
+        self.assertNotIn("reply.indexOf(said) >= 0", self.js)

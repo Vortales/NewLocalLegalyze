@@ -1304,27 +1304,51 @@ JS_READ_ANSWER = r"""
     // заявку: дело получило «Отказано» с пустым основанием. Теперь текст
     // пользователя никогда не считается ответом, а `document.body` как
     // запасной источник не используется вовсе.
+    //
+    // v44.1: отсечение «наше сообщение внутри ответа» было слишком грубым —
+    // ответ отбрасывался, если где-то в нём встречался текст запроса (а он
+    // встречается: страница ИИ держит реплики в общих контейнерах). Из-за
+    // этого настоящий ответ не доходил до разбора и появлялось «Ответ с
+    // постановлением не пришёл». Теперь отсекаем ТОЛЬКО те узлы, которые
+    // целиком лежат внутри сообщения пользователя, и текст, который ЦЕЛИКОМ
+    // совпадает с нашей репликой.
     const ANSWER = ['message-content', '.model-response-text',
                     '.response-container', 'model-response'];
     const USER = ['user-query', 'user-query-content', '.query-text',
                   '[data-test-id="user-query"]', '[data-test-id="user-query-content"]',
                   '.user-message', 'user-message'];
     const clean = (node) => ((node && node.innerText) || '').trim();
-    const readLast = (selectors) => {
+    const squeeze = (text) => (text || '').replace(/\s+/g, ' ').trim();
+    const inUserMessage = (node) => {
+        for (const sel of USER) {
+            try {
+                if (node.closest && node.closest(sel)) return true;
+            } catch (e) { /* селектор не поддержан — пропускаем */ }
+        }
+        return false;
+    };
+    const readLast = (selectors, skipUser) => {
         let text = '';
         for (const sel of selectors) {
-            const nodes = document.querySelectorAll(sel);
-            if (!nodes.length) continue;
-            const candidate = clean(nodes[nodes.length - 1]);
-            if (candidate.length > text.length) text = candidate;
+            let nodes = [];
+            try {
+                nodes = document.querySelectorAll(sel);
+            } catch (e) { continue; }
+            for (let i = nodes.length - 1; i >= 0; i--) {
+                const node = nodes[i];
+                if (skipUser && inUserMessage(node)) continue;
+                const candidate = clean(node);
+                if (candidate.length > text.length) text = candidate;
+                if (text) break;   // последний подходящий узел этого селектора
+            }
         }
         return text;
     };
-    const reply = readLast(ANSWER);
-    const said = readLast(USER);
+    const reply = readLast(ANSWER, true);
     if (!reply) return '';
-    // Ответ не может быть своей же заявкой.
-    if (said && (reply === said || reply.indexOf(said) >= 0)) return '';
+    const said = readLast(USER, false);
+    // Ответ не может БЫТЬ своей же репликой (но может её цитировать).
+    if (said && squeeze(reply) === squeeze(said)) return '';
     return reply;
 })()
 """
@@ -5839,6 +5863,9 @@ class MainWindow(QMainWindow):
         # заполнял диалог перед отправкой (следующий процесс). После чистого
         # чата диалога уже нет, и ответ ИИ приходил при пустых полях — разбор
         # падал с AttributeError в `sys.excepthook`, дело не обновлялось.
+        self._doc_request_mode = ("intake"
+                                  if str(record.get("kind") or "") == "intake"
+                                  else "document")
         if str(record.get("kind") or "") == "intake":
             self._gov_intake_case = str(record.get("case_number") or "")
             self._gov_intake_text = str(record.get("request_text") or "")
@@ -6035,6 +6062,13 @@ class MainWindow(QMainWindow):
         # отправки (отложенная и автоматическая), чтобы не появлялось второе
         # сообщение с тем же текстом.
         self._request_sent_key = ""
+        # v44: «Сформировать» — ждём ПОСТАНОВЛЕНИЕ. Раньше режим не сбрасывался,
+        # и если перед этим нажимали «Проверка ИИ», ответ по постановлению
+        # разбирался как проверка обращения: `_apply_gov_intake` его не узнавал
+        # и возвращал False, после чего `_apply_gov_answer` не находил полей
+        # (ответ ещё печатался) и ждал дальше — до «Ответ с постановлением не
+        # пришёл». Теперь режим задаётся самим действием.
+        self._doc_request_mode = "document"
         diag.event("documents.kind", kind=self._document_kind)
         self._document_doc = document
         self._document_pngs = list(pngs or [])
@@ -6299,6 +6333,10 @@ class MainWindow(QMainWindow):
             self._doc_watch_timer.setInterval(2500)
             self._doc_watch_timer.timeout.connect(self._poll_document_answer)
         self._doc_last_text = None
+        self._doc_settle_text = None
+        self._doc_settle_count = 0
+        # Признак «идёт опрос» мог остаться от прошлого ожидания.
+        self._doc_answer_busy = False
         # v44: запоминаем, сколько текста было в чате ДО нашей заявки. Ответ
         # принимается, только если он появился ПОСЛЕ отправки: раньше
         # «последним ответом на странице» мог оказаться наш же запрос или
@@ -6308,7 +6346,14 @@ class MainWindow(QMainWindow):
         except Exception:
             diag.exception("documents.watch_base")
             self._doc_watch_base_len = 0
+        # v44: ожидание в две ступени. Мягкий срок — только подсказка («ИИ ещё
+        # пишет»), ждать при этом не перестаём: длинное постановление ИИ
+        # печатает дольше трёх минут, и раньше опрос просто выключался —
+        # отсюда «Ответ с постановлением не пришёл». Жёсткий срок — когда
+        # ждать уже бессмысленно.
         self._doc_watch_deadline = time.monotonic() + 180
+        self._doc_watch_hard = time.monotonic() + 900
+        self._doc_watch_hinted = False
         self._doc_watch_timer.start()
 
     def _chat_text_length(self) -> int:
@@ -6324,42 +6369,67 @@ class MainWindow(QMainWindow):
             return 0
 
     def _poll_document_answer(self):
+        """Один опрос чата: прочитали последний ответ ИИ и отдали на разбор.
+
+        v44: опрос больше НЕ глотает ответы. Раньше здесь была проверка
+        «текст чата вырос», и её побочный эффект оказался разрушительным:
+
+        * `grown` считался по замеру в ФОНОВОМ потоке; селекторы замера
+          (`.markdown`, `main`) на странице ИИ включают и наше сообщение,
+          поэтому величина скакала то вверх, то вниз, и настоящий ответ
+          отбрасывался;
+        * если замер не удавался, длина выходила 0, условие `0 > base`
+          не выполнялось — и опрос глушил ЛЮБОЙ ответ, включая постановление;
+        * исключение при чтении ответа тоже отдавало пустую строку.
+
+        Итог: «Ответ с постановлением не пришёл — откройте «Документы»».
+        Теперь ответ читается всегда, а «свой» текст отсекают проверки по
+        содержимому (JS не считает свою заявку ответом; `is_own_request`
+        срабатывает до разбора). Длину чата запоминаем только для журнала.
+        """
         page = getattr(self.worker, "page", None) if self.worker else None
         if page is None:
             return
-        if time.monotonic() > getattr(self, "_doc_watch_deadline", 0):
+        now = time.monotonic()
+        hard = getattr(self, "_doc_watch_hard", None)
+        if hard is None:
+            hard = getattr(self, "_doc_watch_deadline", 0)
+        if now > hard:
             self._doc_watch_timer.stop()
+            diag.event("documents.watch_timeout",
+                       mode=getattr(self, "_doc_request_mode", ""))
             self._set_status("Ответ с постановлением не пришёл — откройте «Документы»",
                              "#f59e0b")
             return
+        if now > getattr(self, "_doc_watch_deadline", 0) and \
+                not getattr(self, "_doc_watch_hinted", False):
+            # Не сдаёмся: ответ ИИ часто приходит позже. Один раз сообщаем об
+            # этом и продолжаем опрос.
+            self._doc_watch_hinted = True
+            diag.event("documents.watch_slow", mode=getattr(self, "_doc_request_mode", ""))
+            self._set_status("Ответ ИИ ещё не пришёл — продолжаем ждать", THEME["accent"])
         if getattr(self, "_doc_answer_busy", False):
             return
         self._doc_answer_busy = True
 
         def task():
             text = ""
-            grown = True
+            length = -1
             try:
                 text = str(page.eval(JS_READ_ANSWER, timeout=2).get("value") or "")
-                # v44: ответ должен быть НОВЫМ. Наша заявка и предыдущие
-                # сообщения короче — по длине текста чата видно, прибавилось
-                # ли что-то после отправки. Без этой проверки разбор брал
-                # «последний ответ на странице», которым была сама заявка
-                # (сессия 20260909-145359: ИИ отвечал на неё, а клиент читал
-                # свой же текст).
-                try:
-                    now_len = int(page.eval(JS_CHAT_TEXT_LENGTH, timeout=2)
-                                  .get("value") or 0)
-                    grown = now_len > int(getattr(self, "_doc_watch_base_len", 0) or 0)
-                except Exception:
-                    diag.exception("documents.poll_length")
-                    grown = True
             except Exception:
                 diag.exception("documents.read_answer")
-            finally:
-                if not grown:
-                    diag.event("documents.answer_not_new", chars=len(text))
-                self._doc_answer_ready.emit(text if grown else "")
+            try:
+                length = int(page.eval(JS_CHAT_TEXT_LENGTH, timeout=2)
+                             .get("value") or 0)
+            except Exception:
+                pass
+            base = int(getattr(self, "_doc_watch_base_len", 0) or 0)
+            if length >= 0 and base and length <= base:
+                # Не повод выбрасывать текст: разбор решит по содержимому.
+                diag.event("documents.chat_not_grown", length=length, base=base,
+                           chars=len(text))
+            self._doc_answer_ready.emit(text)
 
         threading.Thread(target=task, name="DocAnswerPoll", daemon=True).start()
 
@@ -6380,6 +6450,11 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str)
     def _apply_document_answer(self, text):
         """Ответ ИИ получен. Для Прокурора — свой разбор и своя проверка (v36)."""
+        # v44: снимаем признак «идёт опрос» ДО любых проверок. Раньше он
+        # снимался только в разборе документа, и любой ранний выход (своя
+        # заявка, ответ на проверку обращения) навсегда останавливал опрос —
+        # окно писало «Ответ с постановлением не пришёл».
+        self._doc_answer_busy = False
         # v42: «Проверка ИИ» — отдельный вид ответа (служебный блок
         # «ПРОВЕРКА ОБРАЩЕНИЯ»); его нельзя разбирать как постановление.
         # v44: наша заявка — не ответ ИИ (проверяем до любого разбора).
@@ -6387,6 +6462,16 @@ class MainWindow(QMainWindow):
                        or getattr(self, "_gov_intake_text", ""))
         if request_any and pdoc.is_own_request(text, request_any):
             diag.event("documents.skip_own_request", chars=len(text))
+            return
+        # v44: режим ожидания решает, что разбирать. После «Сформировать»
+        # ответ на проверку обращения не принимается за постановление (и
+        # наоборот): раньше проверка обращения перехватывала ответ и
+        # возвращала False, а постановление после этого «не приходило».
+        mode = str(getattr(self, "_doc_request_mode", "") or "")
+        if mode == "intake":
+            # Ждём именно служебный блок проверки. Пока его нет, ответ ИИ ещё
+            # печатается или это не тот ответ — постановление не разбираем.
+            self._apply_gov_intake(text)
             return
         if self._apply_gov_intake(text):
             return
@@ -6409,6 +6494,8 @@ class MainWindow(QMainWindow):
         self._gov_intake_case = str(case_number or "")
         self._gov_intake_text = str(text or "")
         self._gov_intake_handled = None
+        # v44: теперь ответ ждём на ПРОВЕРКУ ОБРАЩЕНИЯ, а не постановление.
+        self._doc_request_mode = "intake"
         # v43.4: после «Проверки ИИ» эту функцию больше не вызывают (заявка
         # идёт через чистый чат). Оставлена совместимостью, но отправку
         # дублировать нельзя — иначе в чат уйдут два запроса.
@@ -6444,6 +6531,27 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=do_send, name="GovIntakeSend", daemon=True).start()
         self._watch_document_answer()
+
+    def _answer_settled(self, text) -> bool:
+        """Ответ ИИ дописан? (v44: страховка от «ответ не пришёл»).
+
+        Признаком конца ответа считается маркер `===КОНЕЦ ОТВЕТА===`. Но ИИ
+        не всегда его пишет (а иногда продолжает ответ уже после документа —
+        «Источники», подпись). Тогда раньше разбор ждал «неизменности» текста
+        между двумя опросами и, если в ответе что-то менялось (курсор, время),
+        не заканчивал ожидание никогда — окно писало «Ответ с постановлением не
+        пришёл». Теперь достаточно, чтобы текст не менялся 3 опроса подряд
+        (~7 секунд): это уже готовый ответ.
+        """
+        previous = getattr(self, "_doc_settle_text", None)
+        count = int(getattr(self, "_doc_settle_count", 0) or 0)
+        if previous == text:
+            count += 1
+        else:
+            count = 1
+        self._doc_settle_text = text
+        self._doc_settle_count = count
+        return count >= 3
 
     def _apply_gov_intake(self, text):
         """Ответ ИИ на проверку обращения: состояние дела + подсказка.
@@ -6587,7 +6695,8 @@ class MainWindow(QMainWindow):
             return
         unchanged = (getattr(self, "_doc_last_text", None) == text)
         self._doc_last_text = text
-        if not pdoc.has_answer_end(text) and not unchanged:
+        if not pdoc.has_answer_end(text) and not unchanged and \
+                not self._answer_settled(text):
             diag.event("documents.answer_still_streaming", chars=len(text))
             return                      # ИИ ещё печатает — не режем документ
         if not pdoc.extract_document_block(text):
@@ -6730,7 +6839,8 @@ class MainWindow(QMainWindow):
             return
         unchanged = (getattr(self, "_doc_last_text", None) == text)
         self._doc_last_text = text
-        if not pdoc.has_answer_end(text) and not unchanged:
+        if not pdoc.has_answer_end(text) and not unchanged and \
+                not self._answer_settled(text):
             return
         if getattr(self, "_doc_handled_text", None) == text:
             return
@@ -7927,6 +8037,14 @@ class MainWindow(QMainWindow):
         if previous:
             previous.close_connections()
         self._chat_ready = False
+        # v44: новый диалог — состояние ожидания ответа начинается с чистого
+        # листа. Опрос предыдущего ответа мог оставить признак «идёт запрос»
+        # (`_doc_answer_busy`) или старое окно ожидания — после этого новый
+        # ответ молча пропускался, и окно писало «Ответ не пришёл».
+        self._doc_answer_busy = False
+        self._doc_watch_hinted = False
+        self._doc_settle_text = None
+        self._doc_settle_count = 0
         self.worker = ChromeWorker(self, port=getattr(self, "cdp_port", DEBUG_PORT),
                                   native=self.native_mode, size=self._zoom_size(),
                                   lang=self.speech_lang, light=self.light_theme)
