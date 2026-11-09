@@ -88,6 +88,7 @@ from postanovlenie_prokuror_ui import PostanovlenieProkuroraDialog
 import postanovlenie_prokuror_data as pgov
 import gov_case as pcases
 import pending_send as psend
+import chat_ready as cread
 
 import json
 import os
@@ -3665,12 +3666,18 @@ class UploadThread(QThread):
                 names_ok = any(str(n or "").strip() for n in names)
 
                 required = self._required_count()
+                # v43.4 (сессия logs_43v): «готово» — это когда в чате лежат
+                # ИМЕННО нужные файлы. `present >= required` подтверждал
+                # готовность по счётчику: 3 чужих файла проходили проверку, и
+                # запрос уходил без «Шаблон.txt» / без заявки. Теперь без
+                # имён готовность не объявляется вовсе, а недостающие файлы
+                # догружаются.
                 if names_ok:
                     missing = self._missing_files(names)
                     complete = present >= required and not missing
                 else:
-                    missing = []
-                    complete = present >= required
+                    missing = list(self._all_files())
+                    complete = False
 
                 if complete:
                     self.wait_started = None
@@ -3948,6 +3955,10 @@ class MainWindow(QMainWindow):
     # v27: разбор ответа ИИ под постановление идёт в фоновом потоке (CDP),
     # результат приходит в главный поток этим сигналом.
     _doc_answer_ready = pyqtSignal(str)
+    # v43.4: отправка отложенной заявки идёт в фоновом потоке (внутри были
+    # sleep и CDP-вызовы — интерфейс замирал на секунды, а таймер продолжал
+    # тикать). Результат приходит этим сигналом: (ok, состояние).
+    _pending_send_done = pyqtSignal(bool, str)
     # Горячие клавиши опрашиваются таймером главного потока (win32_hotkeys),
     # никаких потоков/скрытых окон: колбэк приходит сразу в контекст Qt GUI.
 
@@ -4019,6 +4030,7 @@ class MainWindow(QMainWindow):
         self._response_poll_busy = False
         self.response_poll_finished.connect(self._apply_response_poll)
         self._doc_answer_ready.connect(self._apply_document_answer)
+        self._pending_send_done.connect(self._on_pending_send_done)
         self._upload_failed = False
         # v26: автовыбор промта из локальной папки выполняется один раз за запуск.
         self._prompt_picker_shown = False
@@ -5559,9 +5571,17 @@ class MainWindow(QMainWindow):
                    stage=(record or {}).get("stage_index"),
                    case=(record or {}).get("case_number"),
                    chars=len(str((record or {}).get("request_text") or "")))
-        self._set_status("Перезапуск с чистым чатом — заявка уйдёт после "
-                         "перезапуска", THEME["accent"])
-        self._restart()
+        # v43.4 (замечание): перезапускать ВСЁ приложение не нужно — задача
+        # чистого чата решается внутри GUI. Здесь только перезапускается
+        # браузер: он открывается на пустой странице ИИ, история переписки
+        # остаётся на месте (в профиле), а текущий диалог начинается заново.
+        # Заявка уходит автоматически, когда страница готова и файлы на месте.
+        self._pending_send_started = False
+        self._pending_send_wait_reason = ""
+        self._fresh_chat_requested = True
+        self._set_status("Очистка чата: открываем новый диалог с ИИ…",
+                         THEME["accent"])
+        self._restart_browser_for_fresh_chat()
 
     def _pending_send_record(self):
         """Актуальная отложенная заявка (или пустой словарь)."""
@@ -5576,6 +5596,109 @@ class MainWindow(QMainWindow):
             return record if psend.is_fresh(record) else {}
         return record
 
+    def _restart_browser_for_fresh_chat(self):
+        """Перезапуск ТОЛЬКО браузера внутри GUI — чистый диалог с ИИ (v43.4).
+
+        Замечание пользователя: «не перезагружать приложение целиком, а только
+        браузер внутри GUI. Главная задача — очистить историю чата с ИИ перед
+        исполнением функций с анализом ИИ, таких как "Проверка ИИ"».
+
+        Что делаем:
+
+        * останавливаем поток вложений и автоматизацию — они держат мёртвое
+          CDP-соединение;
+        * гасим дерево процессов браузера (``NativeHost.stop``) и поднимаем
+          его заново на ``URL`` — открывается НОВЫЙ диалог, без прошлых
+          сообщений;
+        * окно клиента, форма и настройки остаются на месте: перезапуска
+          приложения и ожидания его старта больше нет.
+
+        Если браузером управляет QtWebEngine (резервный режим), вместо
+        перезапуска процесса открывается домашняя страница — результат тот же.
+        """
+        if self._closing:
+            return
+        diag.event("browser.fresh_chat.begin", native=bool(self.native_mode),
+                   engine="qtwebengine" if not self.native_mode else "external_chrome")
+        self._pending_send_stop()
+        try:
+            if getattr(self, "upload_thread", None) is not None:
+                self.upload_thread.stop()
+                self.upload_thread.wait(500)
+        except Exception:
+            diag.exception("main.fresh_chat_upload_stop")
+        self.upload_thread = None
+        self.upload_deadline_timer.stop()
+        self.pdf_attached = False
+        self._last_attached_state = None
+        self._upload_confirmed_at = None
+        self._pending_send_started_at = time.monotonic()
+        try:
+            if getattr(self, "_doc_watch_timer", None) is not None:
+                self._doc_watch_timer.stop()
+        except Exception:
+            diag.exception("main.fresh_chat_watch_stop")
+        try:
+            if self.worker is not None:
+                self.worker.close_connections()
+        except Exception:
+            diag.exception("main.fresh_chat_close_connections")
+        self.worker = None
+        self._chat_ready = False
+        self._surface_corrected = False
+        self._trace_chat_captured = False
+        self._show_overlay("Новый диалог с ИИ",
+                           "Очищаем чат: открываем страницу заново…")
+        host = getattr(self, "browser_host", None)
+        if self.native_mode and host is not None:
+            try:
+                host.stop()
+            except Exception:
+                diag.exception("main.fresh_chat_host_stop")
+            self.chrome_hwnd = None
+            # Тот же путь запуска, что при старте: страница, профиль, зум,
+            # встраивание окна в плейсхолдер.
+            QTimer.singleShot(400, self._start_chrome)
+            return
+        # Резервный (встроенный) движок: новый диалог = домашняя страница.
+        try:
+            self.web_browser.open_home()
+        except Exception:
+            diag.exception("main.fresh_chat_open_home")
+        QTimer.singleShot(600, self._start_web_automation)
+        self._start_web_automation()
+
+    def _load_pending_document(self):
+        """Готовит вложения для отложенной заявки после чистого чата (v43.4).
+
+        Раньше заявку подхватывал новый процесс, и путь к .txt приходил с
+        диска через запись `pending_send.json`. Теперь приложение не
+        перезапускается, поэтому путь к заявке восстанавливаем из самой записи
+        — иначе `document_path` остался бы пустым, а поток вложений не
+        приложил бы заявку к чату.
+        """
+        record = getattr(self, "_pending_send_record_data", {}) or {}
+        source = str(record.get("source_path") or "")
+        if not source:
+            return
+        try:
+            path = Path(source)
+            if not path.exists():
+                diag.event("pending_send.source_missing", path=path.name)
+                return
+            if str(record.get("kind") or "") == "intake":
+                # У «Проверки ИИ» вложение — сама заявка-обращение.
+                self.document_path = path
+                self._document_kind = "gov"
+            else:
+                self.document_path = path
+                self._document_kind = str(record.get("document_kind") or "gov")
+            self._doc_request_text = path.read_text(encoding="utf-8")
+            diag.event("pending_send.source_loaded", kind=record.get("kind"),
+                       name=path.name)
+        except Exception:
+            diag.exception("main.pending_send.source")
+
     def _resume_pending_send(self):
         """Старт клиента: подхватить заявку и отправить её после готовности чата.
 
@@ -5583,68 +5706,147 @@ class MainWindow(QMainWindow):
         файлы прикреплены. Заявка отправляется ровно один раз: после успеха
         запись удаляется.
         """
-        record = self._pending_send_record()
+        # v43.4: если заявку положили в этой же сессии (перезапускается только
+        # браузер), она уже в памяти — с диска её не перечитываем: файл мог
+        # быть удалён после отправки, а отправлять всё равно нужно.
+        record = getattr(self, "_pending_send_record_data", {}) or {}
+        if not record:
+            record = self._pending_send_record()
         if not record:
             return False
         if getattr(self, "_pending_send_started", False):
             return False
         self._pending_send_started = True
         self._pending_send_record_data = record
+        self._pending_send_wait_reason = ""
+        self._pending_send_started_at = time.monotonic()
         diag.event("pending_send.resume", kind=record.get("kind"),
-                   stage=record.get("stage_index"))
+                   stage=record.get("stage_index"),
+                   same_session=bool(getattr(self, "_fresh_chat_requested", False)))
         title = psend.describe(record) or "Заявка"
-        self._set_status(f"Отправка после перезапуска: {title}", THEME["accent"])
-        # Отправляем только когда в чате уже есть файлы: иначе текст уйдёт
-        # в пустое поле ввода и потеряется (проверено логом сессии).
-        self._pending_send_timer = QTimer(self)
-        self._pending_send_timer.setInterval(1500)
-        self._pending_send_timer.timeout.connect(self._try_send_pending)
+        self._set_status(f"Чат чистый: готовим файлы — {title}", THEME["accent"])
+        # Вложения для новой страницы: .pdf и «Шаблон.txt» выгружает обычный
+        # поток, заявку возвращаем из записи (после чистого чата путь к ней
+        # больше не приходит из нового процесса).
+        self._load_pending_document()
+        # v43.4: контекст ответа. Раньше `_gov_intake_case`/`_gov_intake_text`
+        # заполнял диалог перед отправкой (следующий процесс). После чистого
+        # чата диалога уже нет, и ответ ИИ приходил при пустых полях — разбор
+        # падал с AttributeError в `sys.excepthook`, дело не обновлялось.
+        if str(record.get("kind") or "") == "intake":
+            self._gov_intake_case = str(record.get("case_number") or "")
+            self._gov_intake_text = str(record.get("request_text") or "")
+            self._gov_intake_handled = None
+        if not getattr(self, "pdf_path", None):
+            self._load_prompt()
+        else:
+            self._start_upload_thread()
+        # Отправляем только когда файлы подтверждены и «устоялись»: иначе
+        # текст уйдёт в чат без вложений (ошибка сессии logs_43v).
+        if getattr(self, "_pending_send_timer", None) is None:
+            self._pending_send_timer = QTimer(self)
+            self._pending_send_timer.setInterval(700)
+            self._pending_send_timer.timeout.connect(self._try_send_pending)
         self._pending_send_timer.start()
         return True
 
     def _try_send_pending(self):
-        """Ждём готовности чата и вложений, затем отправляем заявку."""
+        """Ждём ФАКТИЧЕСКОЙ готовности вложений, затем отправляем заявку.
+
+        v43.4 (сессия logs_43v). Раньше здесь было только «pdf_attached ==
+        True», а этот флаг выставлял поток загрузки — и выставлял его рано:
+        в логе запрос ушёл в 11:06:51.125, когда в чате было `present=0`,
+        а файлы начали прикрепляться только в 11:06:51.5 и подтвердились в
+        11:06:52.5. ИИ получал сообщение без .pdf и .txt.
+
+        Теперь перед отправкой проверяется состояние страницы: все нужные
+        файлы по именам, загрузка не идёт, лишних файлов нет, и после
+        подтверждения прошла выдержка `chat_ready.SETTLE_SECONDS` — файлам
+        нужно 1–2 секунды, чтобы прикрепиться окончательно.
+        """
         record = getattr(self, "_pending_send_record_data", {}) or {}
         if not record:
             self._pending_send_stop()
             return
+        if getattr(self, "_pending_send_busy", False):
+            return
         page = getattr(self.worker, "page", None) if self.worker else None
         if page is None or self._closing:
             return
-        # Ждём, пока промт и «Шаблон.txt» прикрепятся: заявка без файлов
-        # бессмысленна, а в пустое поле ввода текст не уходит.
-        if not getattr(self, "pdf_attached", False) and getattr(
-                self, "upload_thread", None) is not None:
-            waited = time.monotonic() - float(
-                getattr(self, "_pending_send_started_at", 0.0) or 0.0)
-            if waited > 180:
-                diag.event("pending_send.files_timeout")
+        waited = time.monotonic() - float(
+            getattr(self, "_pending_send_started_at", 0.0) or 0.0)
+        required = cread.required_names(
+            getattr(self, "pdf_path", None), getattr(self, "template_path", None),
+            getattr(self, "document_path", None), TEMPLATE_EXPORT_NAME)
+        try:
+            state = check_state(page)
+        except Exception:
+            diag.exception("pending_send.check_state")
+            state = {}
+        confirmed_at = getattr(self, "_upload_confirmed_at", None)
+        gate = cread.check(state, required, confirmed_at=confirmed_at)
+        if not gate.get("ready"):
+            reason = str(gate.get("reason") or "")
+            if reason != getattr(self, "_pending_send_wait_reason", ""):
+                self._pending_send_wait_reason = reason
+                diag.event("pending_send.wait", reason=reason,
+                           waited=round(waited, 1), present=gate.get("present"),
+                           required=len(required),
+                           uploading=bool((state or {}).get("uploading")))
+            self._set_status(cread.wait_message(reason, waited), THEME["accent"])
+            if cread.expired(waited):
+                diag.event("pending_send.files_timeout", reason=reason,
+                           waited=round(waited, 1))
                 self._pending_send_finish(psend.STATE_EXPIRED)
             return
+        self._pending_send_wait_reason = ""
+        diag.event("pending_send.ready", present=gate.get("present"),
+                   names=[str(n)[:60] for n in (gate.get("names") or [])][:5],
+                   waited=round(waited, 1))
         self._pending_send_stop()
         text = str(record.get("request_text") or "")
         kind = str(record.get("kind") or "document")
-        self._pending_send_sent_at = time.monotonic()
-        try:
-            page.eval(JS_FOCUS_INPUT, timeout=2)
-        except Exception:
-            diag.exception("pending_send.focus_input")
-        time.sleep(0.15)
-        try:
-            page.send("Input.insertText", {"text": text}, timeout=6)
-        except Exception:
-            diag.exception("pending_send.insert_text")
-            self._pending_send_finish(psend.STATE_EXPIRED)
+        if getattr(self, "_pending_send_busy", False):
             return
-        time.sleep(0.4)
-        try:
-            sent = page.eval(JS_STOP_AND_SEND, timeout=4).get("value")
-            diag.event("pending_send.sent", kind=kind, result=str(sent)[:120])
-        except Exception:
-            diag.exception("pending_send.send")
-        self._pending_send_finish(psend.STATE_SENT, record)
-        if kind == "intake":
-            self._watch_document_answer()
+        self._pending_send_busy = True
+        self._pending_send_sent_at = time.monotonic()
+        self._set_status("Файлы на месте — отправляем заявку ИИ…", THEME["accent"])
+
+        def task():
+            inserted = False
+            try:
+                page.eval(JS_FOCUS_INPUT, timeout=2)
+            except Exception:
+                diag.exception("pending_send.focus_input")
+            time.sleep(0.15)
+            try:
+                page.send("Input.insertText", {"text": text}, timeout=6)
+                inserted = True
+            except Exception:
+                diag.exception("pending_send.insert_text")
+            if inserted:
+                time.sleep(0.4)
+                try:
+                    sent = page.eval(JS_STOP_AND_SEND, timeout=4).get("value")
+                    diag.event("pending_send.sent", kind=kind,
+                               chars=len(text), result=str(sent)[:120])
+                except Exception:
+                    diag.exception("pending_send.send")
+            self._pending_send_done.emit(inserted, kind)
+
+        threading.Thread(target=task, name="PendingSend", daemon=True).start()
+
+    @pyqtSlot(bool, str)
+    def _on_pending_send_done(self, ok, kind):
+        """Отправка завершилась (главный поток): закрываем заявку и ждём ответ."""
+        self._pending_send_busy = False
+        record = getattr(self, "_pending_send_record_data", {}) or {}
+        if ok:
+            self._pending_send_finish(psend.STATE_SENT, record)
+            if kind == "intake":
+                self._watch_document_answer()
+            return
+        self._pending_send_finish(psend.STATE_EXPIRED, record)
 
     def _pending_send_stop(self):
         timer = getattr(self, "_pending_send_timer", None)
@@ -5693,6 +5895,8 @@ class MainWindow(QMainWindow):
             else "iad"
         self._pending_send_started = False
         self._pending_send_record_data = {}
+        self._pending_send_busy = False
+        self._upload_confirmed_at = None
         diag.event("documents.kind", kind=self._document_kind)
         self._document_doc = document
         self._document_pngs = list(pngs or [])
@@ -6017,6 +6221,12 @@ class MainWindow(QMainWindow):
         self._gov_intake_case = str(case_number or "")
         self._gov_intake_text = str(text or "")
         self._gov_intake_handled = None
+        # v43.4: после «Проверки ИИ» эту функцию больше не вызывают (заявка
+        # идёт через чистый чат). Оставлена совместимостью, но отправку
+        # дублировать нельзя — иначе в чат уйдут два запроса.
+        if getattr(self, "_pending_send_record_data", None):
+            diag.event("gov.intake.skip_direct_send", case=self._gov_intake_case)
+            return
         if page is None:
             diag.event("gov.intake.no_page")
             self._set_status("Чат ещё не готов — проверьте обращение позже",
@@ -6072,7 +6282,7 @@ class MainWindow(QMainWindow):
             store = self._document_case_store()
             case = None
             if getattr(self, "_gov_intake_case", ""):
-                case = store.load(self._gov_intake_case)
+                case = store.find(self._gov_intake_case)
             if case is None and getattr(self, "_gov_intake_text", ""):
                 case = store.open_or_create(self._gov_intake_text)
             if case is not None:
@@ -6088,7 +6298,7 @@ class MainWindow(QMainWindow):
         self._gov_intake_handled = text
         self._gov_intake_watch_stop()
         store = self._document_case_store()
-        case = store.load(self._gov_intake_case) if self._gov_intake_case else None
+        case = store.find(self._gov_intake_case)
         if case is None:
             case = store.open_or_create(self._gov_intake_text)
         case.apply_intake(result)
@@ -6368,7 +6578,7 @@ class MainWindow(QMainWindow):
             if doc.get("case_number"):
                 case = store.load(doc.get("case_number"))
             elif getattr(self, "_gov_intake_case", ""):
-                case = store.load(self._gov_intake_case)
+                case = store.find(self._gov_intake_case)
             stage_kind = doc.get("case_stage_kind") or (
                 pcases.STAGE_MEASURE if doc.is_final() else pcases.STAGE_INTAKE)
             # v43.2: по делу со статусом «Отказано» документ — первичное
@@ -7631,11 +7841,12 @@ class MainWindow(QMainWindow):
                 self._trace_chat_captured = True
                 self._trace_page("chat-ready", full=True)
 
-            self._load_prompt()
-            # v43.2: если клиент перезапущен ради заявки («Сформировать» /
-            # «Проверка ИИ»), отправляем её только теперь — чат уже чистый.
-            self._pending_send_started_at = time.monotonic()
-            self._resume_pending_send()
+            # v43.4: заявка, ждущая чистого чата, сначала готовит вложения
+            # (заявку и промт) и только потом запускает обычную загрузку.
+            # Иначе промт выгружался бы без заявки, а отправка ждала файл,
+            # которого нет в очереди.
+            if not self._resume_pending_send():
+                self._load_prompt()
 
         except Exception:
             diag.exception("main.py:3369")
@@ -7909,6 +8120,9 @@ class MainWindow(QMainWindow):
 
         if attached:
             self.pdf_was_loaded_once = True
+            # v43.4: момент подтверждения вложений. Выдержка перед отправкой
+            # считается от него — файлам нужно 1–2 с, чтобы прикрепиться.
+            self._upload_confirmed_at = time.monotonic()
             self._set_dot(THEME["ok"])
             self._set_status("Готов к работе", THEME["ok"])
             self._hide_overlay()

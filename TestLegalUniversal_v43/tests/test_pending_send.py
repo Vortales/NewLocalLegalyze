@@ -108,20 +108,29 @@ class PendingSendWiringTests(unittest.TestCase):
         self.assertIn("restart_requested.emit", block)
         self.assertIn("pending_send.save", block)
 
-    def test_main_restarts_and_resumes(self):
+    def test_main_queues_and_starts_fresh_chat(self):
+        """v43.4: кнопки формы перезапускают ТОЛЬКО браузер, не приложение."""
         self.assertIn("import pending_send as psend", self.main)
         self.assertIn("dlg.restart_requested.connect(self._on_pending_send_restart)",
                       self.main)
         block = self.main[self.main.index("def _on_pending_send_restart"):]
-        block = block[:block.index("def _document_case_store")]
-        self.assertIn("self._restart()", block)
-        self.assertIn("def _resume_pending_send", block)
-        self.assertIn("def _try_send_pending", block)
-        self.assertIn("psend.mark_sent", block)
+        block = block[:block.index("def _pending_send_record")]
+        # приложение больше не перезапускается целиком
+        self.assertNotIn("self._restart()", block)
+        self.assertIn("self._restart_browser_for_fresh_chat()", block)
+        self.assertIn("psend.save", block)
+
+    def test_fresh_chat_restarts_only_the_browser(self):
+        block = self.main[self.main.index("def _restart_browser_for_fresh_chat"):]
+        block = block[:block.index("def _load_pending_document")]
+        self.assertIn("host.stop()", block)          # гасим окно браузера
+        self.assertIn("self._start_chrome", block)   # поднимаем заново
+        self.assertNotIn("restart_app", block)       # без перезапуска клиента
+        self.assertNotIn("QApplication", block)
 
     def test_resume_runs_after_chat_is_ready(self):
-        block = self.main[self.main.index("self._load_prompt()\n            # v43.2"):]
-        self.assertIn("_resume_pending_send()", block[:400])
+        block = self.main[self.main.index("if not self._resume_pending_send():"):]
+        self.assertIn("self._load_prompt()", block[:200])
 
     def test_no_double_send_with_upload_thread(self):
         block = self.main[self.main.index("def _on_files_attached"):]

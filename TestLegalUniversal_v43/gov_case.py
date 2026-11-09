@@ -282,6 +282,10 @@ class GovCase:
     intake_basis: str = ""
     #: Сырой ответ ИИ на проверку — чтобы прокурор мог перечитать решение.
     intake_answer: str = ""
+    #: Сколько раз обращение отправлялось на проверку ИИ (v43.4). Поле было
+    #: «временным атрибутом»: `to_dict()` его не сохранял, в `case.json` его не
+    #: было, и после перезапуска счётчик обнулялся.
+    intake_checks: int = 0
     #: a) что прокурор увидел на видеофиксации.
     facts_video: str = ""
     #: b) доводы за.
@@ -641,6 +645,22 @@ class GovCaseStore:
             return True
         except Exception:
             return False
+
+    def find(self, number) -> GovCase | None:
+        """Дело по номеру или `None`, если номер пустой/некорректный (v43.4).
+
+        `load()` вызывают из обработчиков ответа ИИ, где номер приходит из
+        записи отложенной отправки. Пустое значение раньше превращалось в
+        папку «без-номера», а любое исключение при чтении уходило в
+        `sys.excepthook` и выглядело как «ошибка после ответа ИИ».
+        """
+        text = str(number or "").strip()
+        if not text:
+            return None
+        try:
+            return self.load(text)
+        except Exception:
+            return None
 
     def items(self) -> list:
         """Все дела, свежие сверху."""
