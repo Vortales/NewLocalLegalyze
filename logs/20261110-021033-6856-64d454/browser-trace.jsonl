@@ -1,0 +1,2 @@
+{"time": "2026-11-09T23:10:34.765497+00:00", "t": 6238.562, "pid": 6856, "thread": "MainThread", "kind": "mark.trace.installed", "dir": "C:\\Users\\G5KC\\AppData\\Roaming\\Legalyze\\logs\\20261110-021033-6856-64d454", "version": "browser-trace-1", "python": "3.12.6", "platform": "win32"}
+{"time": "2026-11-09T23:10:34.936875+00:00", "t": 6238.734, "pid": 6856, "thread": "MainThread", "kind": "mark.trace.finish", "events": 0, "unknown": {}}

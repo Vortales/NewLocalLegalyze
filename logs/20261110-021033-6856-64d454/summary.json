@@ -1,0 +1,26 @@
+{
+ "session": {
+  "id": "20261110-021033-6856-64d454",
+  "pid": 6856,
+  "started": "2026-11-09T23:10:33.951450+00:00"
+ },
+ "log_dir": "C:\\Users\\G5KC\\AppData\\Roaming\\Legalyze\\logs\\20261110-021033-6856-64d454",
+ "generated": "2026-11-09T23:10:35.496848+00:00",
+ "alive_seconds": 1.5,
+ "states": {},
+ "exceptions": [],
+ "warnings": [],
+ "events": {
+  "session.start": 1,
+  "windows.privilege": 1,
+  "windows.inventory": 1,
+  "bt.trace.installed": 1,
+  "stage.begin": 1,
+  "instance.already_running": 1,
+  "stage.end": 1,
+  "bt.trace.finish": 1,
+  "session.atexit": 1
+ },
+ "dropped_records": 0,
+ "end_reason": "exit"
+}

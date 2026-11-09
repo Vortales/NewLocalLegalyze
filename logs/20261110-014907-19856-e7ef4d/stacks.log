@@ -1,0 +1,29 @@
+Timeout (0:05:00)!
+Thread 0x0000306c (most recent call first):
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\browser_trace.py", line 1404 in audit_export
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\main.py", line 3615 in run
+
+Thread 0x000015ac (most recent call first):
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\diagnostics.py", line 505 in watch
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\threading.py", line 1012 in run
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\threading.py", line 1075 in _bootstrap_inner
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\threading.py", line 1032 in _bootstrap
+
+Thread 0x00004040 (most recent call first):
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\threading.py", line 359 in wait
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\queue.py", line 180 in get
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\browser_trace.py", line 492 in run
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\threading.py", line 1075 in _bootstrap_inner
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\threading.py", line 1032 in _bootstrap
+
+Thread 0x00000370 (most recent call first):
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\threading.py", line 355 in wait
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\queue.py", line 171 in get
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\diagnostics.py", line 157 in run
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\threading.py", line 1075 in _bootstrap_inner
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\threading.py", line 1032 in _bootstrap
+
+Thread 0x00000d14 (most recent call first):
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\main.py", line 7589 in main
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\diagnostics.py", line 272 in wrapped
+  File "D:\Users\79528\PYCHAR~1\PYTHON~2\Legalyze\test2\TE62CA~1\build\MAIN~1.DIS\main.py", line 1 in <module>
