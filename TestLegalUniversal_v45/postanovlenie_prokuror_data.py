@@ -1950,12 +1950,58 @@ _GOV_TYPOS: tuple[tuple[str, str], ...] = (
 )
 
 
+#: Опечатки ИИ в ЗАГОЛОВКАХ разделов (встречаются в реальных ответах):
+#: «УСТАВНОРИЛ» вместо «УСТАНОВИЛ», «ПОСТОНОВИЛ» вместо «ПОСТАНОВИЛ».
+_HEADING_TYPOS = (
+    (r"^уставн\w*", "установил"),
+    (r"^устонов\w*", "установил"),
+    (r"^постонов\w*", "постановил"),
+    (r"^пстановил\w*", "постановил"),
+)
+
+
+def _normalize_heading(heading: str) -> str:
+    """Приводит заголовок раздела к «установил» / «постановил» (v45.1).
+
+    Нужно только для распознавания раздела: сам текст остаётся как у ИИ.
+    """
+    low = str(heading or "").strip(" .:")
+    for pattern, replacement in _HEADING_TYPOS:
+        if re.match(pattern, low):
+            return replacement + low[re.match(pattern, low).end():]
+    return low
+
+
 def fix_gov_typos(text: str) -> str:
     """Убирает повторяющиеся опечатки ИИ («прокуроровское производство»)."""
     result = str(text or "")
     for pattern, replacement in _GOV_TYPOS:
         result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
     return result
+
+
+def _is_basis_echo(line: str, doc) -> bool:
+    """Строка «Основание: …» в конце документа повторяет блок «Основание» (v45.1).
+
+    В ответе из лога 20261109-161442 после пунктов «ПОСТАНОВИЛ» шла строка
+    «Основание: пункт 14 части 1 статьи 16; Регламента подачи обращений …».
+    Она попадала в резолюцию как ещё один пункт постановления.
+    """
+    if ":" not in line:
+        return False
+    key, value = line.split(":", 1)
+    if str(key).strip().lower() not in ("основание", "правовое основание",
+                                        "нормативное основание"):
+        return False
+    value = str(value or "").strip().lower()
+    if not value:
+        return False
+    known = (doc.get("legal_basis") or "") + " " + (doc.get("violation_clause") or "")
+    known = " ".join(known.split()).lower()
+    if not known.strip():
+        return True                     # основание уже есть в шапке документа
+    first = " ".join(value.split()[:6])
+    return first in known or known[:40] in value
 
 
 def strip_signature_points(points: list) -> list:
@@ -2193,12 +2239,22 @@ def parse_gov_answer(answer_text: str, base_doc: PostanovlenieProkurora | None =
             continue
         compact = re.sub(r"[\s=*/\-_]+", "", line.upper())
         if "ПОСТАНОВЛЕНИЕ" in compact and compact.startswith("ПОСТАНОВЛЕНИЕ"):
-            saw_marker = True
-            continue
+            # v45.1: строка «Постановление вынес: Jonathan Raine» — это ПОЛЕ,
+            # а не заголовок документа. Клиент принимал её за маркер и терял
+            # автора: проверка писала «не указано, кто вынес постановление».
+            raw_key = line.split(":", 1)[0]
+            if ":" in line and _normalize_gov_key(raw_key):
+                marker_row = False
+            else:
+                saw_marker = True
+                continue
         if "КОНЕЦПОСТАНОВЛЕНИЯ" in compact or "КОНЕЦОТВЕТА" in compact:
             continue
         plain = strip_markdown(line)
         heading = plain.lower().strip(" .:")
+        # v45.1: ИИ пишет заголовки с опечатками («УСТАВНОРИЛ» вместо
+        # «УСТАНОВИЛ»). Из-за этого весь раздел фактов не попадал в документ.
+        heading = _normalize_heading(heading)
         if heading.startswith(("установил", "у с т а н о в и л")):
             in_facts, in_points = True, False
             rest = re.sub(r"^[^:]*:\s*", "", plain).strip()
@@ -2245,11 +2301,20 @@ def parse_gov_answer(answer_text: str, base_doc: PostanovlenieProkurora | None =
             continue
         if plain:
             if in_points:
-                for chunk in re.split(r"(?:^|\s)(?=\d{1,2}[.)]\s)", plain):
-                    body = strip_markdown(re.sub(r"^\d{1,2}[.)]\s*", "", chunk.strip()))
-                    if body:
-                        points.append(body)
-                        saw_content = True
+                # v45.1: ИИ переносит пункт на следующую строку. Без склейки
+                # «1. Отказать гражданину …» и его продолжение «на основании
+                # пункта 14 …» становились ДВУМЯ пунктами постановления.
+                numbered_line = bool(_NUMBERED.match(line))
+                # Подпись прокурора (должность, ФИО, удостоверение) — не
+                # продолжение последнего пункта: она уходит в реквизиты.
+                if points and not numbered_line and not is_signature_line(plain):
+                    points[-1] = (points[-1] + " " + plain).strip()
+                else:
+                    for chunk in re.split(r"(?:^|\s)(?=\d{1,2}[.)]\s)", plain):
+                        body = strip_markdown(re.sub(r"^\d{1,2}[.)]\s*", "", chunk.strip()))
+                        if body:
+                            points.append(body)
+                            saw_content = True
             elif in_facts:
                 facts_lines.append(plain)
                 saw_content = True
@@ -2258,7 +2323,9 @@ def parse_gov_answer(answer_text: str, base_doc: PostanovlenieProkurora | None =
                 saw_content = True
 
     if points:
-        doc.points = [fix_gov_typos(p) for p in strip_signature_points(points)]
+        clean_points = [p for p in strip_signature_points(points)
+                        if not _is_basis_echo(p, doc)]
+        doc.points = [fix_gov_typos(p) for p in clean_points]
     if facts_lines:
         # Раздел «УСТАНОВИЛ» — это выводы прокурора, а не «Обстоятельства»:
         # раньше он приклеивался к обстоятельствам и печатался дважды.

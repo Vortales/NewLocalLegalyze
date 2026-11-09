@@ -177,5 +177,163 @@ class RefusalTypeTests(unittest.TestCase):
         self.assertIn("образуют нарушение", doc.facts_text())
 
 
+#: Ответ ИИ из лога 20261109-161442-5868-df44a7 (в чате виден вместе с
+#: цитатой нашей заявки). Именно на нём «Сформировать» не давал PNG.
+QUOTED_ANSWER = """Memphis.pdf
+PDF
+Шаблон.txt
+File
+Заявка (отправлено в чат).txt
+File
+ЭТАП: первичное решение по обращению (документ об отказе).
+Обращение уже рассмотрено: в принятии обращения отказано. Оформи это решение постановлением Прокурора — вид решения «Об отказе в принятии обращения к производству».
+
+ОСНОВАНИЕ ОТКАЗА (по проверке обращения): пункт 14 части 1 статьи 16
+
+ОТВЕТ ИИ ПО ПРОВЕРКЕ ОБРАЩЕНИЯ (для сверки, дословно):
+Чат в режиме ИИ: ЗАЯВКА НА ПРОВЕРКУ ОБРАЩЕНИЯ (этап 1) Прокурор: Jonathan Raine
+Проверь обращение по Регламенту подачи обращений …
+
+ЗАЯВКА НА ПОСТАНОВЛЕНИЕ ПРОКУРОРА
+Данные для подготовки документа:
+Этап: 1. Первичное решение по обращению (до 24 часов, ст. 12 Регламента)
+Ведомство: STATE OF SAN-ANDREAS
+Вид документа: О принятии обращения к собственному производству
+Номер: AG-2
+Дата: 09.11.2026
+Постановление вынес: Jonathan Raine
+Должность: Прокурор
+Удостоверение прокурора: 198632
+Город: г. Лос-Сантос
+
+ОБРАЩЕНИЕ ГРАЖДАНИНА (текст целиком, форма ОГП):
+1. Данные о заявителе: Palmer blue, 181555
+5. Подробное описание ситуации: являюсь гос. адвокатом, пришёл по вызову…
+
+ПОСТАНОВЛЕНИЕ
+Ведомство: STATE OF SAN-ANDREAS
+Подразделение: OFFICE OF THE ATTORNEY GENERAL
+Вид документа: Об отказе в принятии обращения к производству
+Номер: AG-2
+Дата: 09.11.2026
+Постановление вынес: Jonathan Raine
+Должность: Прокурор
+Удостоверение прокурора: 198632
+Город: г. Лос-Сантос
+Заявитель: Palmer Blue
+ID заявителя: 181555
+Дата обращения: 08.11.2026
+Предмет обращения: заявление о преступлении, совершённом должностным лицом
+В отношении: Kapral Johnson
+Удостоверение: 186164
+Отдел сотрудника: FIB
+Дата и время события: 08.11.2026 19:19
+Нарушенный акт: Регламент подачи обращений в Офис Генерального прокурора
+Пункт нарушения: пункт 14 части 1 статьи 16
+Нормативное основание: часть 1 статьи 12, пункт 14 части 1 статьи 16
+Взыскание: отказ в принятии обращения к производству
+УСТАВНОРИЛ:
+В Офис Генерального прокурора штата Сан-Андреас от гражданина Palmer Blue
+поступило обращение от 08.11.2026. Заявитель сообщает о неправомерных действиях
+сотрудника ФБР Kapral Johnson с удостоверением 186164.
+ПОСТАНОВИЛ:
+1. Отказать гражданину Palmer Blue в принятии к производству обращения от 08.11.2026
+на основании пункта 14 части 1 статьи 16 Регламента подачи обращений.
+2. Настоящее постановление вступает в законную силу с момента подписания.
+3. Разъяснить заявителю, что решение может быть обжаловано в течение 72 часов.
+Прокурор штата Сан-Андреас J. Raine
+Удостоверение прокурора № 198632
+КОНЕЦ ПОСТАНОВЛЕНИЯ
+
+===КОНЕЦ ОТВЕТА==="""
+
+
+class QuotedAnswerIsNotOwnRequestTests(unittest.TestCase):
+    """v45.1: ответ с цитатой заявки — это ОТВЕТ, а не наша заявка.
+
+    В логе 20261109-161442-5868-df44a7 клиент каждые 2.5 с писал
+    `documents.skip_own_request chars=35790`: примета «заявка на постановление»
+    есть в цитате внутри ответа, и настоящий документ отбрасывался целиком.
+    """
+
+    def _request(self):
+        case = cases.GovCase(number="1")
+        case.appeal_raw = "Обращение Palmer Blue"
+        case.apply_intake(cases.parse_intake_answer(
+            "Состояние: Отказано\nОснование: пункт 14 части 1 статьи 16"))
+        doc = pgov.PostanovlenieProkurora()
+        doc.doc_number = "AG-2"
+        return cases.refusal_intake_request(case, doc)
+
+    def test_answer_is_not_taken_for_the_request(self):
+        request = self._request()
+        self.assertFalse(pdoc.is_own_request(QUOTED_ANSWER, request))
+        self.assertFalse(pdoc.is_own_request(QUOTED_ANSWER, ""))
+
+    def test_request_itself_is_still_recognised(self):
+        request = self._request()
+        self.assertTrue(pdoc.is_own_request(request, request))
+        self.assertTrue(pdoc.is_own_request(request, ""))
+
+    def test_marker_phrase_is_not_used_alone(self):
+        import postanovlenie_data as mod
+        self.assertNotIn("заявка на постановление", mod._REQUEST_ONLY_MARKS)
+
+    def test_document_block_starts_at_the_document(self):
+        """Блок берётся с «ПОСТАНОВЛЕНИЕ», а не с цитаты заявки."""
+        block = pdoc.extract_document_block(QUOTED_ANSWER).strip()
+        self.assertTrue(block.startswith("ПОСТАНОВЛЕНИЕ"), block[:60])
+        self.assertNotIn("Данные для подготовки документа", block)
+
+    def test_answer_is_parsed_without_quotation(self):
+        doc = pgov.parse_gov_answer(QUOTED_ANSWER)
+        self.assertIsNotNone(doc)
+        self.assertEqual(doc.get("doc_number"), "AG-2")
+        self.assertEqual(doc.get("applicant_name"), "Palmer Blue")
+        self.assertEqual(doc.get("subject_name"), "Kapral Johnson")
+        # «Постановление вынес: …» — поле, а не маркер документа
+        self.assertEqual(doc.get("author_name"), "Jonathan Raine")
+        self.assertEqual(doc.get("author_id"), "198632")
+        # пункты обращения не попали в резолюцию
+        self.assertEqual(len(doc.points), 3)
+        self.assertIn("Отказать гражданину Palmer Blue", doc.points[0])
+
+    def test_heading_typo_is_understood(self):
+        """ИИ пишет «УСТАВНОРИЛ» — раздел фактов не должен пропадать."""
+        doc = pgov.parse_gov_answer(QUOTED_ANSWER)
+        self.assertIn("Palmer Blue", doc.get("established") or "")
+        self.assertGreater(len(doc.get("established") or ""), 100)
+
+    def test_resolution_points_are_not_split(self):
+        """Перенос строки не должен превращать один пункт в два."""
+        doc = pgov.parse_gov_answer(QUOTED_ANSWER)
+        self.assertEqual(len(doc.points), 3)
+        self.assertTrue(doc.points[0].endswith("Регламента подачи обращений."))
+        self.assertIn("Отказать гражданину Palmer Blue", doc.points[0])
+
+    def test_signature_is_not_glued_to_the_last_point(self):
+        doc = pgov.parse_gov_answer(QUOTED_ANSWER)
+        self.assertNotIn("Raine", doc.points[-1])
+        self.assertNotIn("198632", doc.points[-1])
+
+    def test_basis_echo_is_not_a_point(self):
+        """Строка «Основание: …» в конце — не пункт постановления."""
+        doc = pgov.parse_gov_answer(QUOTED_ANSWER)
+        self.assertFalse(any(p.lower().startswith("основание:")
+                             for p in doc.points))
+
+    def test_document_passes_check(self):
+        doc = pgov.parse_gov_answer(QUOTED_ANSWER)
+        self.assertEqual(list(pgov.check_gov_document(doc)), [])
+
+    def test_png_is_rendered_from_quoted_answer(self):
+        doc = pgov.parse_gov_answer(QUOTED_ANSWER)
+        out = Path(tempfile.mkdtemp())
+        paths = prender.save_pages(
+            prender.render_document(doc, pgov.gov_assets(ROOT)), out, "AG-2")
+        self.assertTrue(paths)
+        self.assertTrue(all(Path(p).stat().st_size > 10_000 for p in paths))
+
+
 if __name__ == "__main__":
     unittest.main()
