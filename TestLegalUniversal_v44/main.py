@@ -1306,14 +1306,18 @@ JS_READ_ANSWER = r"""
     // запасной источник не используется вовсе.
     //
     // v44.1: отсечение «наше сообщение внутри ответа» было слишком грубым —
-    // ответ отбрасывался, если где-то в нём встречался текст запроса (а он
-    // встречается: страница ИИ держит реплики в общих контейнерах). Из-за
-    // этого настоящий ответ не доходил до разбора и появлялось «Ответ с
-    // постановлением не пришёл». Теперь отсекаем ТОЛЬКО те узлы, которые
-    // целиком лежат внутри сообщения пользователя, и текст, который ЦЕЛИКОМ
-    // совпадает с нашей репликой.
-    const ANSWER = ['message-content', '.model-response-text',
-                    '.response-container', 'model-response'];
+    // ответ отбрасывался, если где-то в нём встречался текст запроса.
+    //
+    // v44.2: список блоков ответа расширен. Ответ в чате ИИ приходит одним
+    // контейнером ВМЕСТЕ с цитатой заявки — «**Memphis.pdf** … ЗАЯВКА НА
+    // ПРОВЕРКУ ОБРАЩЕНИЯ (этап 1) … ПРОВЕРКА ОБРАЩЕНИЯ Состояние: Отказано»,
+    // — и на разных страницах (gemini, режим ИИ в поиске) блоки называются
+    // по-разному. Если ни один селектор не подошёл, берём текст основной
+    // области и ВЫРЕЗАЕМ из него нашу реплику: остаётся ответ ИИ.
+    const ANSWER = ['message-content', 'model-response', '.model-response-text',
+                    '.response-container', '.markdown', '.prose',
+                    'ai-mode-response', '[data-test-id="ai-mode-response"]',
+                    '[data-test-id="model-response"]', 'article'];
     const USER = ['user-query', 'user-query-content', '.query-text',
                   '[data-test-id="user-query"]', '[data-test-id="user-query-content"]',
                   '.user-message', 'user-message'];
@@ -1344,9 +1348,23 @@ JS_READ_ANSWER = r"""
         }
         return text;
     };
-    const reply = readLast(ANSWER, true);
-    if (!reply) return '';
     const said = readLast(USER, false);
+    let reply = readLast(ANSWER, true);
+    if (!reply) {
+        // Запасной путь: основная область страницы без нашей реплики.
+        let area = null;
+        try {
+            area = document.querySelector('main') ||
+                   document.querySelector('[role="main"]');
+        } catch (e) { area = null; }
+        if (area) {
+            let rest = clean(area);
+            if (said) rest = rest.split(said).join(' ');
+            rest = rest.trim();
+            if (rest.length > 80) reply = rest;
+        }
+    }
+    if (!reply) return '';
     // Ответ не может БЫТЬ своей же репликой (но может её цитировать).
     if (said && squeeze(reply) === squeeze(said)) return '';
     return reply;

@@ -315,6 +315,92 @@ class RequestIsNotAnAnswerTests(unittest.TestCase):
         self.assertIn("appeal_text", block)
 
 
+class QuotedRequestAnswerTests(unittest.TestCase):
+    """v44.2: ответ ИИ цитирует заявку — программа обязана его УВИДЕТЬ.
+
+    Ответ пользователя из чата (дословно, сокращены только длинные части):
+
+        **Memphis.pdf**  **PDF**  **Шаблон.txt**  **File**
+        **Проверка обращения (заявка).txt**  **File**
+        ЗАЯВКА НА ПРОВЕРКУ ОБРАЩЕНИЯ (этап 1) Прокурор: Jonathan Raine … (вся
+        постановка задачи) …
+        ПРОВЕРКА ОБРАЩЕНИЯ
+        Состояние: Отказано
+        Основание: пункт 14 части 1 статьи 16 Регламента …
+        ===КОНЕЦ ОТВЕТА===
+
+    В v44.1 примета «заявка на проверку обращения» считалась признаком «своей
+    заявки», поэтому такой ответ отбрасывался целиком: ИИ ответил, а окно
+    писало, что ответа нет.
+    """
+
+    ANSWER = (
+        "**Memphis.pdf**\n\n**PDF**\n\n**Шаблон.txt**\n\n**File**\n\n"
+        "**Проверка обращения (заявка).txt**\n\n**File**\n\n"
+        "ЗАЯВКА НА ПРОВЕРКУ ОБРАЩЕНИЯ (этап 1) Прокурор: Jonathan Raine "
+        "Проверь обращение по Регламенту подачи обращений и скажи, принимается "
+        "оно к производству Офиса Генерального прокурора или в принятии "
+        "отказывается. Ответь строго служебным блоком.\n\n"
+        "ПРОВЕРКА ОБРАЩЕНИЯ\n"
+        "Состояние: Отказано\n"
+        "Основание: пункт 14 части 1 статьи 16 Регламента подачи обращений\n"
+        "Вид решения: Постановление об отказе в принятии обращения "
+        "к рассмотрению\n"
+        "Что проверить: правомерность действий сотрудника FIB\n"
+        "КОНЕЦ ПРОВЕРКИ\n\n"
+        "===КОНЕЦ ОТВЕТА==="
+    )
+
+    def _request(self):
+        case = cases.GovCase(number="1")
+        case.appeal_raw = "Обращение гражданина Sae Gucci, ID 12361"
+        return cases.intake_request(case, "Jonathan Raine")
+
+    def test_answer_is_not_taken_for_our_request(self):
+        request = self._request()
+        self.assertFalse(pdoc.is_own_request(self.ANSWER, request),
+                         "ответ с цитатой заявки — это ответ ИИ")
+        self.assertFalse(pdoc.is_own_request(self.ANSWER, ""),
+                         "без текста заявки ответ тоже не должен считаться своим")
+
+    def test_answer_is_recognised_and_parsed(self):
+        self.assertTrue(pgov.has_intake_block(self.ANSWER))
+        result = cases.parse_intake_answer(self.ANSWER)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["state"], cases.INTAKE_REFUSED)
+        self.assertIn("16", result["basis"])
+        self.assertIn("отказе в принятии", result["doc_type"])
+
+    def test_request_with_attachment_chips_is_still_ours(self):
+        request = self._request()
+        chips = ("**Memphis.pdf**\n\n**PDF**\n\n**Шаблон.txt**\n\n**File**\n\n")
+        self.assertTrue(pdoc.is_own_request(chips + request, ""))
+        self.assertTrue(pdoc.is_own_request(request, ""))
+
+    def test_document_answer_with_quoted_request_is_not_ours(self):
+        doc_request = pgov.PostanovlenieProkurora().to_chat_txt()
+        self.assertTrue(pdoc.is_own_request(doc_request, ""))
+        answer = doc_request + ("\n\n===ПОСТАНОВЛЕНИЕ===\nНомер: LSCSD-P-1\n"
+                                "===КОНЕЦ ПОСТАНОВЛЕНИЯ===\n===КОНЕЦ ОТВЕТА===")
+        self.assertFalse(pdoc.is_own_request(answer, ""))
+        self.assertFalse(pdoc.is_own_request(answer, doc_request))
+
+    def test_answer_marker_inside_quoted_request_is_still_an_answer(self):
+        """Ответ приходит одним контейнером с цитатой заявки (v44.2)."""
+        request = self._request()
+        combined = request + "\n\n" + self.ANSWER
+        self.assertTrue(pgov.has_intake_block(combined))
+        self.assertTrue(cases.parse_intake_answer(combined)["ok"])
+        # а в самой заявке маркеров ответа нет
+        self.assertFalse(pgov.has_intake_block(request))
+
+    def test_marker_phrase_is_not_a_standalone_own_mark(self):
+        """Примета «заявка на проверку обращения» больше не решает сама."""
+        import postanovlenie_data as mod
+        self.assertNotIn("заявка на проверку обращения (этап",
+                         mod._REQUEST_ONLY_MARKS)
+
+
 class ReadAnswerJsTests(unittest.TestCase):
     """JS читает ответ ИИ, но никогда — заявку пользователя (v44)."""
 
@@ -333,6 +419,14 @@ class ReadAnswerJsTests(unittest.TestCase):
     def test_user_selectors_are_known(self):
         for selector in ("user-query", "query-text", "user-message"):
             self.assertIn(selector, self.js)
+
+    def test_answer_selectors_are_wide(self):
+        """v44.2: блок ответа на разных страницах называется по-разному."""
+        for selector in ("model-response", "ai-mode-response", ".prose"):
+            self.assertIn(selector, self.js, selector)
+        # запасной путь: основной текст страницы без нашей реплики
+        self.assertIn("main", self.js)
+        self.assertIn("rest.split(said)", self.js)
 
     def test_reply_equal_to_query_is_rejected(self):
         self.assertIn("squeeze(reply) === squeeze(said)", self.js)
