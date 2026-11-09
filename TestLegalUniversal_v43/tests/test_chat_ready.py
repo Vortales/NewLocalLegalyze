@@ -68,12 +68,15 @@ class ChatReadyTests(unittest.TestCase):
         self.assertFalse(result["ready"])
         self.assertEqual(result["reason"], cr.REASON_STALE)
 
-    def test_extra_files_block_sending(self):
+    def test_extra_files_do_not_block_forever(self):
+        """v43.5: «лишние файлы» больше не вечный висяк — они только в журнале."""
         names = REQUIRED + ["Чужой.pdf", "Старый.txt"]
         result = cr.check(_state(5, names=names), REQUIRED,
                           confirmed_at=SETTLED, now=NOW)
-        self.assertFalse(result["ready"])
-        self.assertEqual(result["reason"], cr.REASON_EXTRA)
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["reason"], "")
+        self.assertEqual(sorted(result.get("extra") or []),
+                         ["Старый.txt", "Чужой.pdf"])
 
     def test_timeout_expires_the_wait(self):
         self.assertFalse(cr.expired(10))
@@ -82,6 +85,62 @@ class ChatReadyTests(unittest.TestCase):
     def test_settle_constant_matches_the_log_delay(self):
         """По логу файлам нужно 1–2 секунды — выдержка не меньше двух."""
         self.assertGreaterEqual(cr.SETTLE_SECONDS, 2.0)
+
+
+class DuplicateChipsTests(unittest.TestCase):
+    """v43.5: сессия 20261109-143836-13424-edee58 — «лишние файлы» навсегда.
+
+    В чате три вложения, но страница отдавала ШЕСТЬ чипов (они вложены друг в
+    друга), и имена дублировались:
+
+        present=6  names=["Memphis.pdf", "Шаблон.txt", "Проверка обращения
+                          (заявка).txt", "Memphis.pdf", …]
+
+    Из-за этого заявка висела с причиной «в чате лишние файлы» и не уходила.
+    """
+
+    NAMES = ["Memphis.pdf", "Шаблон.txt", "Проверка обращения (заявка).txt"]
+
+    def test_duplicated_names_are_counted_once(self):
+        state = {"present": 6, "uploading": False,
+                 "names": self.NAMES + self.NAMES}
+        info = cr.normalize(state)
+        self.assertEqual(info["present"], 3)
+        self.assertEqual(info["names"], self.NAMES)
+
+    def test_log_case_is_ready_to_send(self):
+        state = {"present": 6, "uploading": False,
+                 "names": self.NAMES + self.NAMES}
+        result = cr.check(state, self.NAMES, confirmed_at=SETTLED, now=NOW)
+        self.assertTrue(result["ready"], result.get("reason"))
+        self.assertEqual(result["reason"], "")
+
+    def test_case_insensitive_duplicates(self):
+        state = {"present": 4, "uploading": False,
+                 "names": ["Memphis.pdf", "memphis.PDF"]}
+        self.assertEqual(cr.normalize(state)["present"], 1)
+
+    def test_empty_names_are_ignored(self):
+        state = {"present": 3, "uploading": False, "names": ["", " ", ""]}
+        info = cr.normalize(state)
+        self.assertEqual(info["names"], [])
+
+    def test_stream_merges_nested_chips(self):
+        """JS не считает вложенные чипы дважды."""
+        src = (Path(__file__).resolve().parent.parent / "main.py").read_text(
+            encoding="utf-8")
+        js = src[src.index("JS_CHECK_FILES = r"):]
+        js = js[:js.index('"""', js.index('"""') + 3)]
+        self.assertIn("parent.closest('div.ArblTe')", js)
+        self.assertIn("chips.length ? chips : all", js)
+
+    def test_client_deduplicates_names(self):
+        src = (Path(__file__).resolve().parent.parent / "main.py").read_text(
+            encoding="utf-8")
+        self.assertIn("def _unique_names(", src)
+        block = src[src.index("def check_state("):]
+        block = block[:block.index("def _unique_names")]
+        self.assertIn("_unique_names(names)", block)
 
 
 class RequiredNamesTests(unittest.TestCase):

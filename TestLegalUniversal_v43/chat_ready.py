@@ -81,13 +81,29 @@ def required_names(pdf_path=None, template_path=None, document_path=None,
 
 
 def normalize(state: dict) -> dict:
-    """Приводит состояние из страницы к предсказуемому виду."""
+    """Приводит состояние из страницы к предсказуемому виду.
+
+    v43.5 (сессия 20261109-143836-13424-edee58): в чате три вложения, а
+    страница отдавала шесть чипов и список имён с повторами — заявка висела
+    с причиной «в чате лишние файлы» и не отправлялась никогда. Дубли имён
+    теперь не считаются файлами: число берётся по УНИКАЛЬНЫМ именам.
+    """
     state = state or {}
     try:
         present = int(state.get("present", 0) or 0)
     except Exception:
         present = 0
-    names = [str(name or "") for name in (state.get("names") or [])]
+    names = []
+    for name in (state.get("names") or []):
+        text = str(name or "").strip()
+        if not text:
+            continue
+        if text.lower() in [item.lower() for item in names]:
+            continue
+        names.append(text)
+    if names:
+        # Уникальные имена точнее счётчика узлов DOM.
+        present = len(names)
     return {
         "present": max(0, present),
         "uploading": bool(state.get("uploading", False)),
@@ -128,11 +144,15 @@ def check(state: dict, required: list, confirmed_at: float | None = None,
         result["reason"] = REASON_INCOMPLETE
         result["missing"] = missing[:4]
         return result
-    # Лишние файлы: обычно это «остаток» прошлой загрузки. С ним ИИ получает
-    # чужие вложения, поэтому сначала чистим чат, а не отправляем.
-    if info["present"] > len(required) + 1:
-        result["reason"] = REASON_EXTRA
-        return result
+    # v43.5: лишние файлы больше НЕ блокируют отправку. Раньше это был
+    # «вечный висяк»: счётчик завышался из-за вложенных чипов, и заявка не
+    # уходила никогда (сессия 20261109-143836-13424-edee58). Теперь
+    # избыточные вложения только фиксируются в результате и в журнале, а
+    # отправка идёт, когда все нужные файлы на месте.
+    extra = [name for name in info["names"]
+             if name.strip().lower() not in {n.strip().lower() for n in required}]
+    if extra:
+        result["extra"] = extra[:4]
     if now - float(confirmed_at) < float(settle):
         result["reason"] = REASON_SETTLING
         return result
@@ -148,7 +168,7 @@ def wait_message(reason: str, waited: float = 0.0) -> str:
         REASON_NO_FILES: "Ждём файлы заявки…",
         REASON_UPLOADING: "Файлы ещё загружаются — ждём окончания загрузки…",
         REASON_INCOMPLETE: "Прикрепляются файлы — ждём полный набор…",
-        REASON_EXTRA: "В чате лишние файлы — очищаем перед отправкой…",
+        REASON_EXTRA: "В чате есть посторонние файлы…",
         REASON_SETTLING: "Файлы на месте, проверяем готовность…",
         REASON_TIMEOUT: "Файлы не подтвердились — отправка отменена",
         REASON_STALE: "Ждём подтверждение вложений…",

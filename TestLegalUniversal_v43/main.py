@@ -941,11 +941,21 @@ def grant_mic_permission(browser: CDP, page: CDP):
 # Детект файлов в чате Google AI
 JS_CHECK_FILES = r"""
 (() => {
-const chips = Array.from(document.querySelectorAll('div.ArblTe'));
+const all = Array.from(document.querySelectorAll('div.ArblTe'));
+// v43.5 (сессия 20261109-143836-13424-edee58): чипы вложены друг в друга —
+// на три файла в чате было ШЕСТЬ узлов div.ArblTe, и каждый файл считался
+// дважды (present=6 при трёх вложениях). Из-за этого заявка не отправлялась:
+// «в чате лишние файлы». Считаем только ВНЕШНИЕ чипы.
+const chips = all.filter((el) => {
+    try {
+        const parent = el.parentElement;
+        return !(parent && parent.closest && parent.closest('div.ArblTe'));
+    } catch (e) { return true; }
+});
 let done = 0;
 let uploading = false;
 const names = [];
-for (const chip of chips) {
+for (const chip of (chips.length ? chips : all)) {
     let fname = '';
     try {
         const host = chip.closest('div[role="button"]');
@@ -1745,13 +1755,34 @@ def check_state(page: CDP):
                 "probe_ok": True,
                 "present": present,
                 "uploading": bool(value.get("uploading", False)),
-                "names": [str(n) for n in names] if isinstance(names, list) else [],
+                "names": _unique_names(names),
             }
     except Exception:
         diag.exception("main.py:1148")
         pass
 
     return default
+
+
+def _unique_names(names) -> list:
+    """Имена вложений без повторов (v43.5).
+
+    Один файл в чате может быть представлен несколькими узлами DOM: в сессии
+    20261109-143836-13424-edee58 три вложения дали `present=6` и список
+    ["Memphis.pdf", "Шаблон.txt", "Проверка обращения (заявка).txt",
+     "Memphis.pdf", …]. Из-за удвоения заявка считалась «лишними файлами» и
+    никогда не отправлялась. Считаем файлы, а не узлы.
+    """
+    if not isinstance(names, list):
+        return []
+    result = []
+    for name in names:
+        text = str(name or "").strip()
+        if not text:
+            continue
+        if text.lower() not in [item.lower() for item in result]:
+            result.append(text)
+    return result
 
 
 def _chat_has_file(names, wanted: str) -> bool:
@@ -5802,6 +5833,7 @@ class MainWindow(QMainWindow):
         self._pending_send_wait_reason = ""
         diag.event("pending_send.ready", present=gate.get("present"),
                    names=[str(n)[:60] for n in (gate.get("names") or [])][:5],
+                   extra=[str(n)[:40] for n in (gate.get("extra") or [])][:4],
                    waited=round(waited, 1))
         self._pending_send_stop()
         text = str(record.get("request_text") or "")
