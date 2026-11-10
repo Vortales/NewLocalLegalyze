@@ -140,6 +140,64 @@ def offence_is_stated(value: str) -> bool:
                           r"нарушил\w*\s+(?:требовани|положени|норм)", low))
 
 
+def subject_requisites(doc) -> str:
+    """«В отношении / Удостоверение / Отдел сотрудника» одним предложением (v51).
+
+    Замечание п.1: «отсутствуют в PNG при наличии в заявке — „В отношении /
+    Удостоверение / Отдел сотрудника“». Реквизиты нарушителя есть в полях и в
+    заявке, но ИИ пересказывает обращение своими словами и не всегда их
+    повторяет — тогда в бланке их нет вовсе.
+
+    Поэтому, если «УСТАНОВИЛ» этих данных не содержит, добавляем ОДНО
+    предложение (без ярлыков бланка: замечание v41 — «не вставляй названия
+    полей»). Уже упомянутое не дублируется.
+    """
+    name = _clean(doc.get("subject_name")) if hasattr(doc, "get") else ""
+    if not name or is_placeholder(name):
+        return ""
+    ident = _clean(doc.get("subject_id")) if hasattr(doc, "get") else ""
+    ident = "" if is_placeholder(ident) else ident
+    rank = _clean(doc.get("subject_rank")) if hasattr(doc, "get") else ""
+    rank = "" if is_placeholder(rank) else rank
+    department = _clean(doc.get("subject_department")) if hasattr(doc, "get") else ""
+    department = "" if is_placeholder(department) else department
+    parts = []
+    if department:
+        parts.append(department)
+    if rank:
+        parts.append(rank)
+    who = " ".join(parts) if parts else "сотрудник"
+    phrase = f"Установлено, что {who} {name}"
+    if ident:
+        phrase += f", удостоверение № {ident}"
+    return phrase + "."
+
+
+def append_subject_requisites(text: str, doc) -> str:
+    """Дописывает реквизиты нарушителя, если их нет в тексте (v51)."""
+    raw = str(text or "").strip()
+    phrase = subject_requisites(doc)
+    if not phrase:
+        return raw
+    low = raw.lower()
+    name = _clean(doc.get("subject_name")).lower()
+    ident = _clean(doc.get("subject_id"))
+    if name and name in low and (not ident or ident in raw):
+        return raw                       # ФИО и удостоверение уже названы
+    if not raw:
+        return phrase
+    # Ставим перед выводом о составе: «…образуют нарушение: части 1 статьи
+    # 15.1…» должно оставаться последним выводом, а не разрываться справкой.
+    marker = "образуют нарушение"
+    index = raw.lower().find(marker)
+    if index > 0:
+        start = max(raw.rfind(". ", 0, index), raw.rfind(".\n", 0, index))
+        start = start + 2 if start >= 0 else 0
+        head, tail = raw[:start], raw[start:]
+        return _end_sentence(head.strip()) + " " + phrase + " " + tail.strip()
+    return _end_sentence(raw) + " " + phrase
+
+
 #: «Место события»-заглушки: это описание процесса, а не адрес.
 _NOT_A_PLACE = re.compile(
     r"(в\s+ходе|в\s+процессе|в\s+результате|при\s+исполнении|"
@@ -1790,7 +1848,10 @@ class PostanovlenieProkurora:
                 parts.append(f"В подтверждение представлено: {evidence}.")
         # v41 (AG-2): «… никак не реагирует Гражданин Lordik Claw обратился…» —
         # части склеивались, если ИИ не поставил точку в конце «Обстоятельств».
-        return " ".join(_end_sentence(p.strip()) for p in parts if p.strip())
+        joined_parts = " ".join(_end_sentence(p.strip()) for p in parts if p.strip())
+        # v51 (п.1): реквизиты нарушителя («В отношении / Удостоверение / Отдел
+        # сотрудника») в заявке есть, а ИИ их не пересказал — в PNG их не было.
+        return append_subject_requisites(joined_parts, self)
 
     def decision_points(self) -> list:
         """Резолюция. Если ИИ не прислал пункты — собираем по виду решения."""

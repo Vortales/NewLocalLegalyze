@@ -101,6 +101,50 @@ class V51OffencePhraseTests(unittest.TestCase):
         self.assertEqual(doc.facts_text().count("образуют нарушение"), 1)
 
 
+class V51SubjectRequisiteTests(unittest.TestCase):
+    """«В отношении / Удостоверение / Отдел сотрудника» есть в заявке — нет в PNG."""
+
+    def setUp(self):
+        import postanovlenie_prokuror_data as g
+        self.g = g
+
+    def _doc(self, established):
+        return self.g.PostanovlenieProkurora(
+            doc_type="О возбуждении уголовного дела по обращению",
+            established=established, subject_name="Jonny Zakonov",
+            subject_id="55454", subject_department="LSCSD",
+            subject_rank="Deputy Sheriff")
+
+    def test_requisites_are_added_when_ai_omits_them(self):
+        text = self._doc("Сотрудник мешал заседанию Сената.").facts_text()
+        self.assertIn("55454", text)
+        self.assertIn("LSCSD", text)
+        self.assertIn("Jonny Zakonov", text)
+
+    def test_requisites_are_not_repeated(self):
+        doc = self._doc("Сотрудник LSCSD Jonny Zakonov, удостоверение № 55454, "
+                        "мешал заседанию.")
+        self.assertEqual(doc.facts_text().lower().count("удостоверение"), 1)
+
+    def test_requisites_go_before_the_offence_conclusion(self):
+        doc = self._doc("Сотрудник мешал заседанию. Указанные обстоятельства "
+                        "образуют нарушение: части 1 статьи 15.1 Уголовного "
+                        "Кодекса штата Сан-Андреас.")
+        text = doc.facts_text()
+        self.assertLess(text.index("удостоверение № 55454"),
+                        text.index("образуют нарушение"))
+        self.assertTrue(text.rstrip().endswith("Сан-Андреас."))
+
+    def test_placeholders_are_not_printed_as_requisites(self):
+        doc = self.g.PostanovlenieProkurora(
+            subject_name="Jonny Zakonov", subject_id="не указано",
+            subject_department="—")
+        text = doc.facts_text()
+        self.assertIn("Jonny Zakonov", text)
+        self.assertNotIn("не указано", text)
+        self.assertNotIn("удостоверение", text)
+
+
 class V51EvidenceStubTests(unittest.TestCase):
     """«В подтверждение представлено: представлены.» (AG-2)."""
 
