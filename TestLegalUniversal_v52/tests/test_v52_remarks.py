@@ -126,6 +126,39 @@ class V52StripperTests(unittest.TestCase):
         self.assertEqual(self.g.strip_appeal_form_items(""), "")
 
 
+class V52RealExportTests(unittest.TestCase):
+    """Выгрузка `Постановление_52_для_версии` — ровно тот документ из замечания."""
+
+    ROOT52 = ROOT.parent / "Постановление_52_для_версии"
+
+    def _fields(self, stage_dir):
+        import json
+        path = self.ROOT52 / "AG-1" / stage_dir / "ИИ-поля.json"
+        if not path.exists():
+            self.skipTest("выгрузка отсутствует")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data.get("поля", data)
+
+    def test_export_ag1_intake(self):
+        import postanovlenie_prokuror_data as g
+        doc = g.PostanovlenieProkurora.from_dict(self._fields("этап-1 — принятие"))
+        facts = doc.facts_text()
+        self.assertNotIn("Событие имело место", facts)
+        self.assertNotIn("Подробное описание ситуации", facts)
+        self.assertTrue(facts.startswith("10 ноября 2026 года"), facts[:120])
+        # дата/место события не потеряны — они в реквизитах документа
+        self.assertEqual(doc.get("event_date"), "09.11.2026 19:43")
+        self.assertTrue(doc.get("event_place"))
+
+    def test_export_ag1_sanction_stage(self):
+        import postanovlenie_prokuror_data as g
+        doc = g.PostanovlenieProkurora.from_dict(self._fields("этап-2 — санкция"))
+        facts = doc.facts_text()
+        self.assertNotIn("Событие имело место", facts)
+        self.assertNotIn("Подробное описание ситуации", facts)
+        self.assertNotIn("все описано", facts)
+
+
 class V52NoRegressionInFixturesTests(unittest.TestCase):
     """Эталоны AG-1/AG-2 рендерятся без новых замечаний."""
 
