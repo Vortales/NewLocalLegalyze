@@ -101,6 +101,66 @@ class V51OffencePhraseTests(unittest.TestCase):
         self.assertEqual(doc.facts_text().count("образуют нарушение"), 1)
 
 
+class V51BasisTextTests(unittest.TestCase):
+    """«Основание»: падеж нормы и повтор акта (выгрузка AG-1)."""
+
+    def setUp(self):
+        import postanovlenie_prokuror_data as g
+        self.g = g
+        self.act = ("Регламент подачи обращений в Офис Генерального прокурора "
+                    "штата San-Andreas")
+
+    def test_initial_letter_is_lowered(self):
+        self.assertEqual(self.g.norm_lower_initial("Статья 14"), "статья 14")
+        self.assertEqual(self.g.norm_lower_initial("Пункт 8.5"), "пункт 8.5")
+        self.assertEqual(self.g.norm_lower_initial("часть 1 статьи 15.1"),
+                         "часть 1 статьи 15.1")
+
+    def test_abbreviation_is_not_touched(self):
+        self.assertEqual(self.g.norm_lower_initial("УК штата San-Andreas"),
+                         "УК штата San-Andreas")
+
+    def test_act_is_not_repeated_after_the_norm(self):
+        doc = self.g.PostanovlenieProkurora(
+            doc_type="О принятии обращения к собственному производству",
+            violation_clause="Статья 14", violation_act=self.act)
+        basis = doc.basis_text()
+        self.assertEqual(basis.lower().count("регламент"), 1)
+        self.assertTrue(basis.startswith("статья 14 Регламента"), basis)
+
+    def test_act_is_named_once_for_several_norms(self):
+        """AG-1: «статья 14 Регламента …; статьи 5, 6, 7 … Регламента …»."""
+        doc = self.g.PostanovlenieProkurora(
+            doc_type="О принятии обращения к собственному производству",
+            violation_clause="Статья 14", violation_act=self.act,
+            legal_basis=f"Статьи 5, 6, 7, 11, 12, 14 {self.act}")
+        basis = doc.basis_text()
+        self.assertEqual(basis.lower().count("регламента"), 1, basis)
+        self.assertIn("статья 14", basis)
+        self.assertIn("5, 6, 7", basis)
+
+    def test_repeated_norm_in_legal_basis_is_not_printed_twice(self):
+        """AG-2: «часть 1 статьи 15.1; …; часть 1 статьи 15.1 УК …»."""
+        doc = self.g.PostanovlenieProkurora(
+            violation_clause="часть 1 статьи 15.1",
+            violation_act="Уголовный Кодекс штата Сан-Андреас",
+            legal_basis="часть 1 статьи 15.1; Уголовного Кодекса штата "
+                        "Сан-Андреас; статья 33 Закона «О деятельности офиса "
+                        "Генерального прокурора штата Сан-Андреас»")
+        basis = doc.basis_text()
+        self.assertEqual(basis.count("15.1"), 1, basis)
+        self.assertIn("статья 33", basis)
+
+    def test_two_different_acts_stay_separate(self):
+        doc = self.g.PostanovlenieProkurora(
+            doc_type="О привлечении", violation_clause="Пункт 8.5",
+            violation_act="Устав LSCSD",
+            legal_basis="статья 12 Закона «О деятельности офиса Генерального прокурора»")
+        basis = doc.basis_text()
+        self.assertIn("Устава LSCSD", basis)
+        self.assertIn("Закона «О деятельности", basis)
+
+
 class V51SubjectRequisiteTests(unittest.TestCase):
     """«В отношении / Удостоверение / Отдел сотрудника» есть в заявке — нет в PNG."""
 

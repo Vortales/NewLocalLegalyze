@@ -140,6 +140,130 @@ def offence_is_stated(value: str) -> bool:
                           r"нарушил\w*\s+(?:требовани|положени|норм)", low))
 
 
+def norm_lower_initial(text: str) -> str:
+    """«Статья 14» → «статья 14» (v51, замечание п.1).
+
+    В выгрузке AG-1 «Основание» начиналось с «Статья 14; Регламент …» —
+    заглавная буква посреди фразы «на основании», да ещё и акт дважды.
+    Регистр выравниваем по остальным строкам «Основания» (v46: «пункт 14 части
+    1 статьи 16 …»), сам падеж нормы не трогаем: его пишет ИИ.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return raw
+    match = re.match(r"([А-ЯЁ]{2,}|[А-ЯЁ][а-яё]+)(\b.*)$", raw, re.DOTALL)
+    if not match:
+        return raw
+    word, tail = match.group(1), match.group(2)
+    # Аббревиатуры («УК», «ОГП») пишутся заглавными — их не трогаем.
+    if word.isupper():
+        return raw
+    return word.lower() + tail
+
+
+def _stem(word: str) -> str:
+    """Грубая основа слова: «Регламент»/«Регламента» → «регла» (v51)."""
+    raw = re.sub(r"[^А-Яа-яЁёA-Za-z]", "", str(word or "")).lower()
+    return raw[:5]
+
+
+def _merge_adjacent_act(parts: list, act: str) -> list:
+    """Схлопывает «статьи 14; Регламента …» → «статьи 14 Регламента …» (v51).
+
+    Замечание п.1: «Основание» повторяло акт дважды подряд — норму и название
+    того же акта отдельным куском через точку с запятой.
+    """
+    if len(parts) < 2 or not act:
+        return parts
+    first_word = _stem(_clean(act).split(" ")[0]) if _clean(act) else ""
+    if not first_word:
+        return parts
+    merged = [parts[0]]
+    for part in parts[1:]:
+        head = _stem(_clean(part).split(" ")[0])
+        if head and head == first_word:
+            merged[-1] = f"{merged[-1]} {part}"
+        else:
+            merged.append(part)
+    return merged
+
+
+def _act_pattern(act: str):
+    """Регэксп ПОЛНОГО названия акта с падежным окончанием первого слова (v51)."""
+    words = [w for w in re.split(r"\s+", _clean(act)) if w]
+    if not words:
+        return None
+    # «Регламент» / «Регламента», «Устав» / «Устава»: первое слово — по основе,
+    # остальные — как есть (в названии они в том же падеже).
+    pattern = re.escape(_stem(words[0])) + r"[А-Яа-яЁёA-Za-z]*"
+    for word in words[1:]:
+        pattern += r"\s+" + re.escape(word)
+    return re.compile(pattern, re.IGNORECASE)
+
+
+def _norm_inside(needle: str, haystack: str) -> bool:
+    """Уже напечатано ли это упоминание нормы (v49/v51).
+
+    Сравниваем не только текст, но и ссылки на нормы: «часть 1 статьи 16»
+    внутри «пункт 14 части 1 статьи 16» — это та же статья и та же часть, и
+    второй раз печатать её не нужно.
+    """
+    def norm(value: str) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip(" ;,.").lower()
+
+    small, big = norm(needle), norm(haystack)
+    if not small:
+        return True
+    if small in big:
+        return True
+    try:
+        refs = _norm_refs(needle)
+        if refs and refs <= _norm_refs(haystack):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _merge_same_act_norms(parts: list, act: str) -> list:
+    """Один акт — одно название, сколько бы норм по нему ни было (v51).
+
+    Выгрузка AG-1: «статья 14 Регламента …; Статьи 5, 6, 7, 11, 12, 14
+    Регламента …» — название акта повторялось. Первое упоминание оставляем,
+    нормы из следующих кусков дописываем к нему, а само название убираем:
+    «статья 14, статьи 5, 6, 7, 11, 12, 14 Регламента …».
+    """
+    pattern = _act_pattern(act)
+    if pattern is None or len(parts) < 2:
+        return parts
+    base_index = None
+    for index in range(len(parts)):
+        part = parts[index]
+        match = pattern.search(part)
+        if match is None:
+            continue                      # акта в этом куске нет — не трогаем
+        if base_index is None:
+            base_index = index            # первое упоминание оставляем как есть
+            continue
+        # Второе упоминание: убираем название акта, нормы дописываем к первому.
+        trimmed = (part[:match.start()] + part[match.end():]).strip(" ;,.")
+        # Кусок мог содержать несколько норм («…; часть 1 статьи 16»): каждую
+        # проверяем отдельно и печатаем только новое.
+        fresh = []
+        for piece in trimmed.split(";"):
+            piece = re.sub(r"\s{2,}", " ", piece).strip(" ;,.")
+            if not piece or _norm_inside(piece, parts[base_index]):
+                continue
+            fresh.append(norm_lower_initial(piece))
+        if not fresh:
+            parts[index] = ""
+            continue
+        parts[base_index] = (f"{parts[base_index].rstrip(' ;,.')}, "
+                             f"{'; '.join(fresh)}")
+        parts[index] = ""
+    return [p for p in parts if p]
+
+
 def subject_requisites(doc) -> str:
     """«В отношении / Удостоверение / Отдел сотрудника» одним предложением (v51).
 
@@ -2019,7 +2143,7 @@ class PostanovlenieProkurora:
                 clause = f"пункт {num.group(1)}"
                 if tail and len(tail) > 3:
                     clause += f" ({tail.strip(' .')})"
-            parts.append(clause)
+            parts.append(norm_lower_initial(clause))
             # «статьи 8, 10, 11» без названия акта ничего не говорит читателю,
             # но и повторять уже названный в норме акт нельзя (v39).
             if act:
@@ -2029,9 +2153,28 @@ class PostanovlenieProkurora:
         elif self.get("violation_act"):
             parts.append(self.get("violation_act"))
         legal = self.get("legal_basis")
-        if legal and legal.lower() not in " ".join(parts).lower():
-            parts.append(legal)
-        joined = "; ".join(p.strip(" ;,") for p in parts if p.strip(" ;,"))
+        if legal:
+            # v51 (п.1): «Нормативное основание» из ответа ИИ — несколько
+            # норм через «;». Раньше вся строка печаталась одним куском, и
+            # повтор уже названной нормы («часть 1 статьи 15.1; …; часть 1
+            # статьи 15.1 Уголовного Кодекса …») было не убрать. Разбираем по
+            # кускам и берём только то, чего в «Основании» ещё нет.
+            for piece in re.split(r"[;]", str(legal)):
+                piece = piece.strip(" ;,.")
+                if not piece:
+                    continue
+                if any(_norm_inside(piece, done) for done in parts):
+                    continue
+                parts.append(piece)
+        parts = [p.strip(" ;,") for p in parts if p.strip(" ;,")]
+        # v51 (п.1): «статьи 14» вместо «Статья 14» и без повтора того же акта.
+        if parts:
+            parts = _merge_adjacent_act(parts, act)
+            parts = _merge_same_act_norms(parts, act)
+        # v51 (п.1): повтор акта и одной и той же нормы убираем ДО сведения
+        # кусков через «;» — иначе «пункт 14 части 1 статьи 16 Регламента …,
+        # пункт 14 части 1 статьи 16» печаталось как две нормы.
+        joined = ", ".join(parts) if len(parts) > 1 and act else "; ".join(parts)
         # v46: в «Основании» печатались две нормы про одну статью — «пункт 14
         # части 1 статьи 16; … часть 1 статьи 16 Регламента …». Оставляем то
         # упоминание, что конкретнее.
