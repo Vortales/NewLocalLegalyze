@@ -1,2 +1,0 @@
-23:10:34.765 mark.trace.installed | dir=C:\Users\G5KC\AppData\Roaming\Legalyze\logs\20261110-021033-6856-64d454 version=browser-trace-1 python=3.12.6 platform=win32
-23:10:34.936 mark.trace.finish | events=0 unknown={}
