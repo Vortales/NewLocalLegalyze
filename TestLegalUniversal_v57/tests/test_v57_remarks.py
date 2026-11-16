@@ -172,9 +172,15 @@ class RedLineTests(unittest.TestCase):
         self.assertAlmostEqual(render.RED_LINE_PX, expected, delta=1)
         self.assertAlmostEqual(render.RED_LINE_PX / 200 * 2.54, 1.25, places=1)
 
-    def test_selected_variants_match_the_recommendation(self):
+    def test_selected_variants(self):
+        """v57: отступ у ВСЕХ абзацев (решение пользователя), связки строгие.
+
+        Сначала был выбран вариант «gost» (первый абзац после заголовка без
+        отступа — как в «Рекомендация.txt»). Затем пользователь выбрал
+        «Вариант 2 „all“ — отступ у ВСЕХ абзацев».
+        """
         render = _render()
-        self.assertEqual(render.RED_LINE_VARIANT, "gost")
+        self.assertEqual(render.RED_LINE_VARIANT, "all")
         self.assertEqual(render.BIND_VARIANT, "always")
 
     def test_first_line_of_a_paragraph_is_shorter(self):
@@ -216,11 +222,22 @@ class ParagraphSpacingTests(unittest.TestCase):
         self.assertIn('RED_LINE_VARIANT == "with_gaps"', block,
                       "отбивка между абзацами должна зависеть от варианта")
 
-    def test_first_paragraph_after_heading_has_no_indent(self):
+    def test_heading_exception_only_for_gost(self):
+        """Исключение «без отступа после заголовка» действует только в «gost».
+
+        В выбранном варианте «all» вводная часть и первый абзац «УСТАНОВИЛ»
+        печатаются С отступом: `red_line` не передан явно (значит `None` →
+        вариант `all` → отступ).
+        """
         source = (ROOT / "doc_render.py").read_text(encoding="utf-8")
         self.assertIn('para(doc.preamble(), gap=22, red_line=RED_LINE_VARIANT != "gost")',
                       source)
         self.assertIn('para(facts, gap=20, red_line=RED_LINE_VARIANT != "gost")', source)
+
+    def test_all_mode_indents_every_paragraph(self):
+        render = _render()
+        self.assertIn(render.RED_LINE_VARIANT, ("all", "with_gaps"),
+                      "выбран режим, где отступ есть у всех абзацев")
 
 
 # --------------------------------------------------------------------------- #
