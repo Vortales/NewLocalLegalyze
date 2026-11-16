@@ -169,10 +169,15 @@ class V55NoFallbackTests(unittest.TestCase):
         # скачивание портативного Chrome и реквизит устава — не навигация
         self.assertIn("chrome-for-testing",
                       (ROOT / "browser_fetch.py").read_text(encoding="utf-8"))
-        reestr = list((ROOT / "data" / "reestr").glob("*.json"))
-        if reestr:
-            for path in reestr:
-                self.assertIsInstance(str(path), str)
+        # реквизит-источник устава — данные, а не адрес: браузерные модули
+        # про базу устава не знают и открыть её не могут
+        for path in (ROOT / "data" / "reestr").glob("*.json"):
+            self.assertIn("sections", json.loads(path.read_text(encoding="utf-8")), path.name)
+        for name in ("native_browser.py", "qt_browser.py"):
+            self.assertNotIn("reestr", _src(name), name)
+        # и сам адрес-реквизит в коде не встречается — открыть его нечем
+        for name in ("main.py", "native_browser.py", "qt_browser.py"):
+            self.assertNotIn("majestic-rp", _src(name), name)
         # accounts.google.com — только выдача прав микрофона
         source = _code(_src("main.py"))
         microphone = source.split("def grant_mic_permission(", 1)[1].split("\n    def ", 1)[0]
