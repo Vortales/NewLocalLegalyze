@@ -138,6 +138,67 @@ class V56ChatBeforeExportTests(unittest.TestCase):
         self.assertIn("self._iad_dialog = dlg", block)
 
 
+def _statements(block: str) -> str:
+    """Только строки кода блока: комментарии и docstring-и не в счёт.
+
+    Тесты проверяют фактические вызовы, а не упоминания в пояснениях:
+    иначе комментарий «раньше здесь был перезапуск приложения» сам ломал
+    бы проверку.
+    """
+    DQ = chr(34) * 3
+    SQ = chr(39) * 3
+    body = []
+    in_docstring = False
+    for line in block.splitlines():
+        stripped = line.strip()
+        quotes = stripped.count(DQ) + stripped.count(SQ)
+        if in_docstring:
+            if quotes % 2:
+                in_docstring = False
+            continue
+        if quotes % 2:
+            in_docstring = True
+            continue
+        if not stripped or stripped.startswith('#') or quotes:
+            continue
+        body.append(stripped)
+    return '\n'.join(body)
+
+
+class V56NoAppRestartTests(unittest.TestCase):
+    """v56: после PNG приложение не перезапускается — обновляется чат."""
+
+    def _block(self, source, start, end):
+        chunk = source[source.index(start) + len(start):]
+        return chunk[:chunk.index(end)]
+
+    def test_iad_answer_soft_reloads_the_chat(self):
+        source = _src("main.py")
+        block = self._block(source, "    def _apply_iad_answer(", "    def _open_prompts_folder(")
+        self.assertIn("self._schedule_fresh_chat_after_answer()", block)
+        self.assertNotIn("restart_app()", _statements(block))
+
+    def test_post_png_hook_is_soft(self):
+        source = _src("main.py")
+        block = self._block(source, "    def _restart_after_document(", "    @pyqtSlot(str)\n    def _apply_gov_answer")
+        self.assertIn("self._schedule_fresh_chat_after_answer()", block)
+        self.assertNotIn("restart_app()", _statements(block))
+        self.assertNotIn("self._restart()", _statements(block))
+
+    def test_soft_reload_does_not_kill_the_browser(self):
+        source = _src("main.py")
+        block = self._block(source, "    def _schedule_fresh_chat_after_answer(",
+                            "    def _restart_after_document(")
+        self.assertIn("FRESH_CHAT_AFTER_ANSWER_DELAY", block)
+        self.assertIn("_restart_browser_for_fresh_chat", block)
+
+    def test_dialog_message_hides_the_restart(self):
+        source = _src("main.py")
+        block = self._block(source, "    def _apply_iad_answer(", "    def _open_prompts_folder(")
+        self.assertNotIn("Клиент будет перезапущен", block)
+        self.assertIn("Чат с ИИ очистится сам", block)
+
+
 class V56FactsAreInputTests(unittest.TestCase):
     """4. Блоки «Обстоятельства» — вход для ИИ, а не текст документа."""
 

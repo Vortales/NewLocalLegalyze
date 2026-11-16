@@ -7302,10 +7302,16 @@ class MainWindow(QMainWindow):
                 + "\n• ".join(str(p) for p in self._document_pngs)
                 + f"\n\nПапка документа: {folder}\n"
                   "В ней лежат: заявка, ответ ИИ как есть и копия PNG.\n\n"
-                  "Клиент будет перезапущен — так чат и вложения начинаются "
-                  "с чистого листа (как кнопка «Перезагрузить»).",
+                  "Чат с ИИ очистится сам: страница внутри перезагрузится "
+                  "(приложение не закрывается).",
             )
-        self._restart_after_document()
+        # v56 (замечание): «после того как получил .png файл не перезагружай
+        # приложение, а обнови браузер внутри как при „Сформировать“».
+        # Раньше здесь стоял `_restart_after_document()` → `restart_app()`:
+        # приложение закрывалось и запускалось заново. Теперь — тот же мягкий
+        # «новый диалог», что у бланка Прокурора: перезагрузка страницы ИИ по
+        # CDP без убийства браузера, окно формы остаётся открытым.
+        self._schedule_fresh_chat_after_answer()
 
     def _schedule_fresh_chat_after_answer(self):
         """Ответ ИИ получен и PNG собран — очистить чат (v51, замечание п.3).
@@ -7326,11 +7332,18 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(delay, self._restart_browser_for_fresh_chat)
 
     def _restart_after_document(self):
-        """Перезапуск клиента после готового постановления (v28)."""
+        """После PNG приложение НЕ перезапускается (v56).
+
+        Оставлено как совместимая точка входа: старые вызовы и внешние
+        сценарии получают мягкую перезагрузку страницы ИИ, а не
+        `restart_app()`. Замечание пользователя: «после того как получил .png
+        файл не перезагружай приложение, а обнови браузер внутри как при
+        „Сформировать“».
+        """
         if self._closing:
             return
-        diag.event("documents.restart")
-        QTimer.singleShot(600, self._restart)
+        diag.event("documents.restart_soft", reason="post-png")
+        self._schedule_fresh_chat_after_answer()
 
     @pyqtSlot(str)
     def _apply_gov_answer(self, text):
