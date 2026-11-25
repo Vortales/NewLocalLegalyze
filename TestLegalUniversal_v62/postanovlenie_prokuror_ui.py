@@ -57,6 +57,7 @@ import postanovlenie_prokuror_data as gdata
 import gov_case as cases
 import ogp_chain
 import ogp_flow
+import ogp_stages
 import pending_send
 
 
@@ -690,7 +691,7 @@ class PostanovlenieProkuroraDialog(QDialog):
                 "дождитесь ответа и повторите.")
             return
         raw = str(self.case.work_node(kind).get("answer", "") or "")
-        doc = pgov.parse_gov_answer(raw, base=self._collect())
+        doc = gdata.parse_gov_answer(raw, base=self._collect())
         if doc is None:
             doc = self._collect()
         self.print_node_document.emit(str(kind), doc, raw)
@@ -1400,7 +1401,7 @@ class PostanovlenieProkuroraDialog(QDialog):
             return ""
         doc = None
         try:
-            doc = pgov.parse_gov_answer(answer)
+            doc = gdata.parse_gov_answer(answer)
         except Exception:
             diag.exception("ui.gov.pretty_answer")
         return ogp_stages.pretty_answer(doc, answer)

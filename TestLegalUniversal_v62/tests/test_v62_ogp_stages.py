@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import ast
 import unittest
 from pathlib import Path
 
@@ -366,6 +367,56 @@ class SerializeTests(unittest.TestCase):
         self.assertEqual(case.work_chains[0]["letter"], "A")
         self.assertEqual(case.work_node("2.1")["doc_number"], "AG-7")
         self.assertTrue(case.work_node("2.1")["done"])
+
+
+class ImportGuardTests(unittest.TestCase):
+    """v62.1: забытый импорт роняет форму при открытии (краш из лога).
+
+    Лог `20261125-151551-4292-0d0c1d`: `NameError` в `_build_chain_tab` —
+    в форме использовался `ogp_stages`, но модуль не был импортирован, и окно
+    «Постановление Прокурора» падало при открытии. Тест ловит любой такой
+    пропуск: каждое имя, у которого запрашивается атрибут (`ogp_stages.X`,
+    `gdata.X`), обязано быть импортировано или определено в файле.
+    """
+
+    FILES = ("postanovlenie_prokuror_ui.py", "main.py", "gov_case.py",
+             "ogp_stages.py", "ogp_chain.py", "ogp_flow.py")
+
+    @staticmethod
+    def _available_names(tree):
+        import builtins
+        names = set(dir(builtins))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names |= {alias.asname or alias.name.split(".")[0]
+                          for alias in node.names}
+            elif isinstance(node, ast.ImportFrom):
+                names |= {alias.asname or alias.name for alias in node.names}
+            elif isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                names.add(node.name)
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                names.add(node.id)
+            elif isinstance(node, ast.arg):
+                names.add(node.arg)
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                names.add(node.name)
+        return names
+
+    def test_every_module_attribute_is_imported(self):
+        for name in self.FILES:
+            tree = ast.parse(_src(name))
+            available = self._available_names(tree)
+            used = {node.value.id for node in ast.walk(tree)
+                    if isinstance(node, ast.Attribute)
+                    and isinstance(node.value, ast.Name)}
+            missing = sorted(used - available)
+            self.assertEqual(missing, [], f"{name}: не импортировано {missing}")
+
+    def test_form_imports_stages_module(self):
+        ui = _src("postanovlenie_prokuror_ui.py")
+        self.assertIn("import ogp_stages", ui)
+        # форма разбирает ответ ИИ через gdata (в v62 был вызов несуществующего pgov)
+        self.assertNotIn("pgov.", ui)
 
 
 class FormSourceTests(unittest.TestCase):
