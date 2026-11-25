@@ -483,6 +483,45 @@ def _stage3_allowed(case) -> bool:
                    for step in _plan(case))
 
 
+def close_reason(case) -> str:
+    """Что мешает закрыть обращение (v63, решение пользователя).
+
+    Пользователь: «нажать можно в любой момент, но при незакрытых шагах —
+    вопрос „шаги 2.2, 2.3 не вынесены, закрыть всё равно?“». Возвращает текст
+    для этого вопроса; пустая строка — закрывать можно без предупреждений.
+    """
+    stage1 = stage1_from_outcome(getattr(case, "outcome", ""))
+    if not stage1:
+        return "этап 1 не выполнен"
+    if stage1_closes(stage1):
+        return "этап 1 — " + stage1_label(stage1).lower()
+    plan = _plan(case)
+    if not plan:
+        return "план этапа 2 не получен"
+    pending = [int(step.get("n") or 0) for step in plan
+               if not _node_answered(case, int(step.get("n") or 0))]
+    if pending:
+        return "шаги " + ", ".join("2." + str(n) for n in pending) + " не вынесены"
+    return ""
+
+
+def _node_answered(case, number: int) -> bool:
+    """Шаг этапа 2 отработан: ответ ИИ есть и не устарел."""
+    node = case.work_node("2." + str(int(number or 0)))
+    return bool(str(node.get("answer", "") or "").strip()) and not node.get("stale")
+
+
+def negative_steps(case) -> list:
+    """Шаги цепочки, по которым ИИ ответил отрицательно (itogi для этапа 3)."""
+    rows = []
+    for step in _plan(case):
+        number = int(step.get("n") or 0)
+        answer = str(case.work_node("2." + str(number)).get("answer", "") or "")
+        if answer and verdict_of(answer) == "negative":
+            rows.append(number)
+    return rows
+
+
 def chain_progress(case) -> list:
     """Прогресс всех вариантов цепочки: [{letter, title, done, total, active}]."""
     rows = []

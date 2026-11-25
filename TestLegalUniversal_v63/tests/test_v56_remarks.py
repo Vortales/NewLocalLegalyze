@@ -196,7 +196,9 @@ class V56NoAppRestartTests(unittest.TestCase):
         source = _src("main.py")
         block = self._block(source, "    def _apply_iad_answer(", "    def _open_prompts_folder(")
         self.assertNotIn("Клиент будет перезапущен", block)
-        self.assertIn("Чат с ИИ очистится сам", block)
+        # v63: чат больше не очищается после PNG — и сообщение об этом честно
+        self.assertNotIn("Чат с ИИ очистится сам", block)
+        self.assertIn("Чат с ИИ остаётся как есть", block)
 
 
 class V56FactsAreInputTests(unittest.TestCase):

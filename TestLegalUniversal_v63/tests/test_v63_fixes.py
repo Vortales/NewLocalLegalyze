@@ -298,12 +298,46 @@ class V63CloseCaseTests(unittest.TestCase):
         self.assertEqual(restored.closed_at, "25.11.2026 21:00")
         self.assertEqual(restored.close_reason, "готово")
 
-    def test_close_requires_stage3_answer(self):
+    def test_close_asks_before_skipping_unfinished_steps(self):
+        """Решение пользователя: закрывать можно всегда, но с вопросом.
+
+        «Нажать можно в любой момент, но при незакрытых шагах — вопрос
+        „шаги 2.2, 2.3 не вынесены, закрыть всё равно?“».
+        """
         block = _block(_src("postanovlenie_prokuror_ui.py"),
                        "def _close_case_requested", "def _save_current_step")
-        self.assertIn('ogp_stages.node_state(self.case, "3")', block)
-        self.assertIn("self.case_closed.emit", block)
+        self.assertIn("ogp_stages.close_reason(self.case)", block)
+        self.assertLess(block.index("close_reason(self.case)"),
+                        block.index("self.case_closed.emit"))
         self.assertIn("close_work", block)
+        # жёсткого «этап 3 не выполнен — отказ» больше нет
+        self.assertNotIn("Этап 3 не выполнен", block)
+
+    def test_close_reason_lists_unfinished_steps(self):
+        case = gc.GovCase(number="7")
+        case.appeal_raw = "текст"
+        self.assertIn("этап 1 не выполнен", ogp_stages.close_reason(case))
+        case.set_outcome("accept")
+        case.apply_chains([{"letter": "A", "title": "Цепочка A", "why": "",
+                            "steps": [{"n": 1, "kind": "measure", "title": "Запрос"},
+                                      {"n": 2, "kind": "measure", "title": "Проверка"}]}])
+        self.assertIn("2.1", ogp_stages.close_reason(case))
+        case.set_work_node("2.1", answer="ПОСТАНОВИЛ: истребовать документы")
+        self.assertIn("2.2", ogp_stages.close_reason(case))
+        self.assertNotIn("2.1,", ogp_stages.close_reason(case))
+        case.set_work_node("2.2", answer="ПОСТАНОВИЛ: истребовать сведения")
+        self.assertEqual(ogp_stages.close_reason(case), "")
+
+    def test_negative_step_is_reported_for_stage3(self):
+        case = gc.GovCase(number="7")
+        case.appeal_raw = "текст"
+        case.set_outcome("accept")
+        case.apply_chains([{"letter": "A", "title": "Цепочка A", "why": "",
+                            "steps": [{"n": 1, "kind": "measure", "title": "Запрос"},
+                                      {"n": 2, "kind": "measure", "title": "Проверка"}]}])
+        case.set_work_node("2.1", answer="ПОСТАНОВИЛ: истребовать документы")
+        case.set_work_node("2.2", answer="ПОСТАНОВИЛ: отказать в удовлетворении")
+        self.assertEqual(ogp_stages.negative_steps(case), [2])
 
     def test_main_reacts_with_fresh_chat(self):
         block = _block(_src("main.py"), "def _on_gov_case_closed",

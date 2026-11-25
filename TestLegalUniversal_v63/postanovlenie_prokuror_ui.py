@@ -612,6 +612,23 @@ class PostanovlenieProkuroraDialog(QDialog):
         if kind == "1":
             self._intake_check()
             return
+        # v63 (ответ пользователя о коллизиях): этап 3 — итог по выводам этапа 2.
+        # Если ИИ по какому-то шагу ответил отрицательно (нарушение не
+        # подтверждено), итог всё равно можно вынести, но прокурор должен
+        # видеть основание: «отказать» по шагу — это не «завершить производство».
+        if str(kind) == "3":
+            negative = ogp_stages.negative_steps(self.case)
+            if negative:
+                answer = QMessageBox.question(
+                    self, "Этап 3 при отрицательном итоге",
+                    "По шагам " + ", ".join("2." + str(n) for n in negative)
+                    + " ИИ ответил отрицательно (нарушение не подтверждено).\n\n"
+                    "Итог этапа 3 будет опираться на эти выводы: выбирайте вид "
+                    "завершения соответственно. Продолжить?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes)
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
         self._send_node(kind)
 
     def _send_node(self, kind) -> None:
@@ -720,20 +737,26 @@ class PostanovlenieProkuroraDialog(QDialog):
         Документ при этом не печатается: .png на каждом узле делает своя
         кнопка «Сформировать». Здесь только состояние дела и чистый чат.
         """
-        state = ogp_stages.node_state(self.case, "3")
-        if not state.get("answer"):
-            QMessageBox.information(
-                self, "Этап 3 не выполнен",
-                "Сначала выполните этап 3: нажмите «Этап 3», дождитесь ответа "
-                "ИИ и, если нужно, сформируйте .png.")
-            return
-        confirm = QMessageBox.question(
-            self, "Закрыть обращение?",
-            f"Обращение №{self.case.number} будет помечено как отработанное, "
-            "браузер перезагрузится с чистым чатом.\n\n"
-            "Документы дела останутся в папке обращения.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes)
+        # v63 (решение пользователя): закрывать можно в любой момент, но если
+        # шаги цепочки не вынесены — сначала вопрос, а не тихий отказ.
+        warning = ogp_stages.close_reason(self.case)
+        if warning:
+            confirm = QMessageBox.question(
+                self, "Закрыть обращение?",
+                f"Не всё по обращению №{self.case.number} отработано: {warning}.\n\n"
+                "Закрыть всё равно? Дело будет помечено как отработанное, "
+                "браузер перезагрузится с чистым чатом. Документы останутся "
+                "в папке обращения.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+        else:
+            confirm = QMessageBox.question(
+                self, "Закрыть обращение?",
+                f"Обращение №{self.case.number} будет помечено как отработанное, "
+                "браузер перезагрузится с чистым чатом.\n\n"
+                "Документы дела останутся в папке обращения.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes)
         if confirm != QMessageBox.StandardButton.Yes:
             return
         self.case.close_work(
@@ -1010,6 +1033,12 @@ class PostanovlenieProkuroraDialog(QDialog):
         self.close_case_btn.setToolTip(
             "Обращение отработано: дело закрывается, браузер перезагружается "
             "с чистым чатом")
+        # Решение пользователя: кнопка доступна всегда — при незакрытых
+        # шагах она спрашивает подтверждение, а не блокируется молча.
+        self.close_case_btn.setEnabled(True)
+        self.close_case_btn.setToolTip(
+            "Закрыть обращение: дело помечается отработанным, браузер "
+            "перезагружается с чистым чатом")
         self.close_case_btn.clicked.connect(
             lambda _c=False: self._close_case_requested())
         close_row.addWidget(self.close_case_btn)

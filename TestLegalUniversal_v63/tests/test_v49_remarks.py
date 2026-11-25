@@ -327,7 +327,10 @@ class V49DialogStaysOpenTests(unittest.TestCase):
         по-прежнему не закрывается.
         """
         block = _block(self.main, "def _apply_gov_answer", "def _open_prompts_folder")
-        self.assertIn("self._schedule_fresh_chat_after_answer()", block)
+        # v63: после ответа ИИ чат БОЛЬШЕ НЕ чистится — иначе ИИ теряет
+        # контекст этапов. Чистый чат — перед «Этап 1» и по «Закрыть обращение».
+        self.assertNotIn("self._schedule_fresh_chat_after_answer()", block)
+        self.assertIn('diag.event("gov.answer.kept_in_chat"', block)
         # старый «перезапуск клиента» по закрытой форме больше не вызывается
         self.assertNotIn("self._restart_after_document()", block)
         self.assertNotIn("dialog.accept()", block)

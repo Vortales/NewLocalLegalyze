@@ -326,12 +326,19 @@ class V51FreshChatTests(unittest.TestCase):
                              "def _restart_browser_hard("))
         self.assertIn("_restart_browser_hard(", block)
 
-    def test_chat_is_cleared_after_the_answer(self):
-        """п.3: ответ ИИ больше не оставляет браузер с текстом ответа."""
+    def test_chat_is_kept_after_the_answer(self):
+        """v51 п.3 → v63: ответ ИИ остаётся в чате, его хранит контекст этапов.
+
+        Изначально очистка ставилась как «п.3»: браузер не должен оставаться с
+        ответом. В v63 пользователь решил иначе: «Страница ИИ не обновляется и
+        не очищается ни после „Сформировать“, ни после PNG. Чистый чат — только
+        по „Закрыть обращение“». Проверяем оба новых правила.
+        """
         block = _code(_block(self.main, "def _apply_gov_answer(",
                              "def _open_prompts_folder("))
-        self.assertIn("self._schedule_fresh_chat_after_answer()", block)
+        self.assertNotIn("self._schedule_fresh_chat_after_answer()", block)
         self.assertNotIn("self._restart_after_document()", block)
+        self.assertIn('diag.event("gov.answer.kept_in_chat"', block)
 
     def test_answer_cleanup_is_soft_and_keeps_the_form(self):
         block = _code(_block(self.main, "def _schedule_fresh_chat_after_answer(",
