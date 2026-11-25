@@ -1,0 +1,28 @@
+{
+ "session": {
+  "id": "20261103-165454-6768-8d19e5",
+  "pid": 6768,
+  "started": "2026-11-03T13:54:54.904034+00:00"
+ },
+ "log_dir": "C:\\Users\\G5KC\\AppData\\Roaming\\Legalyze\\logs\\20261103-165454-6768-8d19e5",
+ "generated": "2026-11-03T13:55:00.895365+00:00",
+ "alive_seconds": 6.0,
+ "states": {},
+ "exceptions": [
+  {
+   "where": "sys.excepthook",
+   "type": "ModuleNotFoundError",
+   "count": 1
+  }
+ ],
+ "warnings": [],
+ "events": {
+  "session.start": 1,
+  "windows.privilege": 1,
+  "exception": 1,
+  "windows.inventory": 1,
+  "session.atexit": 1
+ },
+ "dropped_records": 0,
+ "end_reason": "exit"
+}

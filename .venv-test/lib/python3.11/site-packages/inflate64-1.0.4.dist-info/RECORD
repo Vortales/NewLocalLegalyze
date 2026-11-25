@@ -1,0 +1,10 @@
+inflate64-1.0.4.dist-info/INSTALLER,sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg,4
+inflate64-1.0.4.dist-info/METADATA,sha256=E-EQct8SikAG_8SG7a3iPbL0g1h96d2p3oT5pG3Aup4,4384
+inflate64-1.0.4.dist-info/RECORD,,
+inflate64-1.0.4.dist-info/WHEEL,sha256=BvA_i88wcFUl5ehXLgmhwyDL4XPGrCKn6CTUA9axFDE,190
+inflate64-1.0.4.dist-info/licenses/COPYING,sha256=3GJlINzVOiL3J68-5Cx3DlbJemT-OtsGN5nYqwMv5VE,26530
+inflate64-1.0.4.dist-info/top_level.txt,sha256=rzgqvEy0HHIpxauQ4xjmO5lqMbXbbGz_dEaVla7SIco,10
+inflate64/__init__.py,sha256=dhan2zphTCjJc3QYFLZqoCqIyht8qShgTImOdtn55VA,530
+inflate64/__pycache__/__init__.cpython-311.pyc,,
+inflate64/_inflate64.cpython-311-x86_64-linux-gnu.so,sha256=x9IxpUjnZ6OLRM5PrNa6pdC4cGZo0hjrhPl7znltdiA,235304
+inflate64/py.typed,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0
