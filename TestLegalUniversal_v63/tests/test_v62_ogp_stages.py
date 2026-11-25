@@ -522,10 +522,7 @@ class ImportGuardTests(unittest.TestCase):
                     for target in node.targets:
                         if isinstance(target, ast.Name):
                             signals[target.id] = self._type_names(node.value.args)
-        # v64: сигнала локальной печати узла больше нет — «Сформировать»
-        # отправляет заявку в чат (`send_in_chat`), а PNG печатает ответ ИИ.
-        self.assertNotIn("print_node_document", signals)
-        self.assertIn("send_in_chat", signals)
+        self.assertIn("print_node_document", signals)
 
         main_tree = ast.parse(_src("main.py"))
         slots = {}
@@ -561,19 +558,20 @@ class ImportGuardTests(unittest.TestCase):
                 f"{signal} (сигнал) ↔ {slot} (слот): сигнатуры расходятся")
         self.assertGreater(checked, 0, "не нашлось ни одной пары сигнал→слот")
 
-    def test_no_orphan_node_print_slot(self):
-        """v64: слот локальной печати узла удалён вместе с сигналом.
-
-        «Сформировать» отправляет заявку в чат, документ печатает
-        `_apply_gov_answer` — второй путь печати был бы мертвым кодом и
-        печатал бы PNG из служебного блока этапа 1 (выгрузка
-        `этап-1 — принятие.7z`).
-        """
-        main = _src("main.py")
-        ui = _src("postanovlenie_prokuror_ui.py")
-        self.assertNotIn("_print_gov_node", main)
-        self.assertNotIn("print_node_document", main)
-        self.assertNotIn("print_node_document", ui)
+    def test_print_node_slot_takes_document_object(self):
+        """Второй аргумент `_print_gov_node` — документ, а не текст (v62.4)."""
+        main_tree = ast.parse(_src("main.py"))
+        for node in ast.walk(main_tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_print_gov_node":
+                deco = [d for d in node.decorator_list
+                        if isinstance(d, ast.Call)
+                        and getattr(d.func, "id", "") == "pyqtSlot"]
+                self.assertTrue(deco, "_print_gov_node без @pyqtSlot")
+                self.assertEqual(self._type_names(deco[0].args),
+                                 ("object", "object", "str"))
+                break
+        else:
+            self.fail("_print_gov_node не найден")
 
     def test_qt_widgets_used_by_form_are_imported(self):
         """Каждый Q-класс из формы присутствует в импорте QtWidgets."""
@@ -644,11 +642,10 @@ class FormSourceTests(unittest.TestCase):
         self.assertNotIn("нажмите «Этап 1»: ИИ решит", self.ui)
 
     def test_main_prints_node_png(self):
-        """v64: PNG узла печатает ответ ИИ, а не локальная кнопка."""
         main = _src("main.py")
-        self.assertIn("def _apply_gov_answer", main)
+        self.assertIn("def _print_gov_node", main)
+        self.assertIn("dlg.print_node_document.connect", main)
         self.assertIn("_doc_node_kind", main)
-        self.assertIn("dlg.send_in_chat.connect", main)
 
     def test_prompt_133_exists(self):
         prompt = (ROOT.parent / "Для новой версии" / "Текущий промт"

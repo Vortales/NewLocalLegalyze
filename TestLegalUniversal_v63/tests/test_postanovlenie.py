@@ -3286,15 +3286,10 @@ class V43FormGateTests(unittest.TestCase):
         # не проверено ИИ (раньше это была проверка intake_checked()).
         self.assertIn('self.form_btn.setEnabled(bool(node.get("can_run")))', src)
         self.assertIn("ogp_stages.node_state(self.case, kind)", src)
-        # v64: «Сформировать» — это заявка на ДОКУМЕНТ в чат ИИ, поэтому
-        # кнопка проверяет доступность узла (`can_run`: порядок этапов,
-        # наличие плана) и уходит в текущий диалог, а не печатает локально.
+        # v62: печать документа требует ответа ИИ по узлу
         block = src[src.index("def _save_node_document"):]
-        block = block[:block.index("def _close_case_requested")]
-        self.assertIn('state.get("can_run")', block)
-        self.assertIn("cases.node_document_request", block)
-        self.assertIn("self.send_in_chat.emit", block)
-        self.assertNotIn("print_node_document", block)
+        block = block[:block.index("def _save_current_step")]
+        self.assertIn('state.get("can_save")', block)
 
 
 class V43CasesDialogTests(unittest.TestCase):
@@ -3482,11 +3477,9 @@ class V43FactsOnlyWhenNeededTests(unittest.TestCase):
         «Постановление»). Теперь в документ он не попадает вообще.
         """
         src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
-        block = src[src.index("def _collect(self"):]
+        block = src[src.index("def _collect(self)"):]
         block = block[:block.index("def set_document")]
-        # v64: этап берётся из узла, для которого собирается документ
-        self.assertIn('stage_meta(stage_kind)["needs_facts"]', block)
-        self.assertIn('cases.stage_kind_for_node(kind)', block)
+        self.assertIn('stage_meta(self._stage_kind())["needs_facts"]', block)
         self.assertIn('doc.set("situation", "")', block)
         self.assertNotIn('doc.set("situation", doc.prosecutor_facts)', block)
         # а в заявку уходят только правки человека

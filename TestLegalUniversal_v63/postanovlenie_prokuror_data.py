@@ -3252,11 +3252,6 @@ _CHAINS_BLOCK_START = re.compile(r"=*\s*ЦЕПОЧКИ\s+ЭТАПА\s*2\s*=*", r
 _CHAINS_BLOCK_END = re.compile(r"=*\s*КОНЕЦ\s+ЦЕПОЧЕК\s*=*", re.IGNORECASE)
 _PLAN_BLOCK_START = re.compile(r"=*\s*ПЛАН\s+ЭТАПА\s*2\s*=*", re.IGNORECASE)
 _PLAN_BLOCK_END = re.compile(r"=*\s*КОНЕЦ\s+ПЛАНА\s*=*", re.IGNORECASE)
-#: v64: блок «РЕКОМЕНДАЦИИ … КОНЕЦ РЕКОМЕНДАЦИЙ» требует промт (1.34, п.8.1.3),
-#: а клиент его не вырезал — в выгрузке `этап-1 — принятие.7z` рекомендации
-#: целиком уехали в «УСТАНОВИЛ» печатаемого постановления.
-_RECO_BLOCK_START = re.compile(r"=*\s*РЕКОМЕНДАЦИИ\s*=*", re.IGNORECASE)
-_RECO_BLOCK_END = re.compile(r"=*\s*КОНЕЦ\s+РЕКОМЕНДАЦИЙ\s*=*", re.IGNORECASE)
 
 
 def strip_service_blocks(text: str) -> str:
@@ -3278,21 +3273,13 @@ def strip_service_blocks(text: str) -> str:
         return result
     for start_rx, end_rx in ((_INTAKE_BLOCK_START, _INTAKE_BLOCK_END),
                             (_CHAINS_BLOCK_START, _CHAINS_BLOCK_END),
-                            (_PLAN_BLOCK_START, _PLAN_BLOCK_END),
-                            (_RECO_BLOCK_START, _RECO_BLOCK_END)):
+                            (_PLAN_BLOCK_START, _PLAN_BLOCK_END)):
         result = _cut_block(result, start_rx, end_rx)
     return result
 
 
 def _cut_block(text: str, start_rx, end_rx) -> str:
-    """Убирает один блок от маркера до маркера (без маркеров).
-
-    v64: границы блока соединяются ПЕРЕВОДОМ СТРОКИ, а не пробелом. Раньше
-    склейка пробелом ставила в одну строку чип вложения и следующий за блоком
-    текст — «File РЕКОМЕНДАЦИИ» — и строковые фильтры мусора (`is_chat_junk`,
-    `is_ui_noise`) такую строку уже не распознавала: она уезжала в «УСТАНОВИЛ»
-    постановления (выгрузка `этап-1 — принятие.7z`).
-    """
+    """Убирает один блок от маркера до маркера (без маркеров)."""
     result = text
     while True:
         start = start_rx.search(result)
@@ -3301,7 +3288,7 @@ def _cut_block(text: str, start_rx, end_rx) -> str:
         tail = result[start.end():]
         end = end_rx.search(tail)
         cut_to = start.end() + (end.end() if end else len(tail))
-        result = (result[:start.start()] + "\n" + result[cut_to:]).strip()
+        result = (result[:start.start()] + " " + result[cut_to:]).strip()
         if not result:
             return ""
 
@@ -3347,117 +3334,6 @@ def clean_established(text: str) -> str:
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     cleaned = re.sub(r"\s+([.,;:])", r"\1", cleaned)
     cleaned = _drop_unfinished_tail(cleaned)
-    return cleaned.strip()
-
-
-# --------------------------------------------------------------------------- #
-#  v64: чистый ответ ИИ из текста страницы чата
-# --------------------------------------------------------------------------- #
-
-#: Якоря, с которых начинается НАСТОЯЩИЙ ответ ИИ. Всё, что на странице чата
-#: стоит раньше, — это эхо нашей заявки, чипы вложений и элементы интерфейса
-#: (выгрузка `этап-1 — принятие.7z`: в поле «Ответ ИИ (только чтение)» лежала
-#: вся страница, включая «Вы отправили 4 файлов…» и «Memphis.pdf / PDF»).
-#: Все якоря ПРИВЯЗАНЫ К СТРОКЕ: непривязанный «ПРОВЕРКА ОБРАЩЕНИЯ» ловился
-#: внутри имени вложения «Проверка обращения (заявка).txt», и голова ответа
-#: обрезалась по чипу файла, а не по началу блока ИИ.
-_ANCHOR_LINE = re.compile(
-    r"^\s*=*\s*(?:"
-    r"ПРОВЕРКА\s+ОБРАЩЕНИЯ"
-    r"|ЦЕПОЧКИ\s+ЭТАПА\s*2"
-    r"|ПЛАН\s+ЭТАПА\s*2"
-    r"|РЕКОМЕНДАЦИИ"
-    r"|ПОСТАНОВЛЕНИЕ\s*(?:№.*)?"
-    r"|УСТАНОВИЛ\s*:*"
-    r"|(?:Состояние|Вид\s+документа|Вид\s+решения)\s*:.*"
-    r")\s*=*\s*$",
-    re.IGNORECASE | re.MULTILINE,
-)
-_ANSWER_ANCHORS: tuple = (_ANCHOR_LINE,)
-
-#: Маркер конца ответа: всё, что после него, — уже не текст ИИ.
-_ANSWER_END = re.compile(r"=*\s*КОНЕЦ\s+ОТВЕТА\s*=*", re.IGNORECASE)
-
-#: Короткие строки, которые нельзя считать мусором: «1.», «б)» — списки ИИ.
-_MEANINGFUL_SHORT = re.compile(r"^(?:\d{1,2}[.)]|[а-яa-z][.)])$", re.IGNORECASE)
-
-
-def _norm_line(value) -> str:
-    return " ".join(str(value or "").split()).strip().lower()
-
-
-def _request_echo(request: str) -> set:
-    """Строки нашей заявки: их ИИ цитирует обратно, в ответе им места нет."""
-    return {_norm_line(line) for line in str(request or "").splitlines()
-            if len(_norm_line(line)) > 20}
-
-
-def _is_page_junk(line: str) -> bool:
-    """Строка — элемент страницы чата, а не текст ответа ИИ (v64)."""
-    text = str(line or "").strip()
-    if not text:
-        return False
-    if _MEANINGFUL_SHORT.match(text):
-        return False
-    if base.is_chat_instruction(text):
-        return True
-    if is_chat_junk(text):
-        return True
-    # Наша собственная реплика из поля запроса («Проверь обращение. Текст
-    # обращения — во вложении…») — ИИ цитирует её обратно вместе с ответом.
-    if _INSTRUCTION_SENTENCE.search(text):
-        return True
-    return bool(base.is_ui_noise(text))
-
-
-def extract_ai_answer(text: str, request: str = "") -> str:
-    """Ответ ИИ без мусора страницы чата (v64).
-
-    Замечание пользователя по выгрузке `этап-1 — принятие.7z`: в поле
-    «Ответ ИИ (только чтение)» — «каша», всё вперемешку. Так и было: в узел
-    цепочки писался ВЕСЬ текст страницы (`main.py` → `set_work_node("1",
-    answer=str(text))`), а страница отдаёт ответ вместе с цитатой нашей
-    заявки, чипами вложений («Memphis.pdf / PDF», «Шаблон.txt / File») и
-    элементами интерфейса («Перейти к предыдущему запросу», рваные
-    «Mem / phis.pdf»).
-
-    Порядок простой и проверяемый:
-
-    1. обрезаем голову до первого якоря ответа (блок проверки, цепочки,
-       рекомендации, «ПОСТАНОВЛЕНИЕ», «УСТАНОВИЛ», «Состояние:»);
-    2. обрезаем хвост после «КОНЕЦ ОТВЕТА»;
-    3. построчно убираем мусор страницы и строки, дословно взятые из нашей
-       заявки (ИИ их цитирует);
-    4. схлопываем пустые строки.
-
-    Сырой текст страницы при этом не теряется: он остаётся в файле
-    «ИИ-ответ.txt» в папке дела — для разбора спорных ситуаций.
-    """
-    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    if not raw.strip():
-        return ""
-    start = None
-    for rx in _ANSWER_ANCHORS:
-        match = rx.search(raw)
-        if match and (start is None or match.start() < start):
-            start = match.start()
-    body = raw[start:] if start is not None else raw
-    end = _ANSWER_END.search(body)
-    if end is not None:
-        body = body[:end.end()]
-    echo = _request_echo(request)
-    kept: list = []
-    for line in body.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            kept.append("")
-            continue
-        if _is_page_junk(stripped):
-            continue
-        if _norm_line(stripped) in echo:
-            continue
-        kept.append(line.rstrip())
-    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(kept))
     return cleaned.strip()
 
 

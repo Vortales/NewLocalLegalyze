@@ -173,7 +173,7 @@ class V49NoLocalRecognitionTests(unittest.TestCase):
         self.assertIn("Реквизиты определит ИИ", block)
 
     def test_collect_does_not_guess_from_appeal_text(self):
-        block = _block(self.ui, "def _collect(self", "def set_document")
+        block = _block(self.ui, "def _collect(self)", "def set_document")
         self.assertNotIn("apply_appeal(doc.appeal_raw)", block)
         self.assertIn("apply_keywords(self.case.intake_fields)", block)
 

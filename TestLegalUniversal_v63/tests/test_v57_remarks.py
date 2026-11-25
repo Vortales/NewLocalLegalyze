@@ -294,7 +294,7 @@ class VersionTests(unittest.TestCase):
 
     def test_version_is_not_older_than_v57(self):
         config = (ROOT / "config.py").read_text(encoding="utf-8")
-        self.assertRegex(config, r'CURRENT_VERSION = "2\.(1[5-9]|2\d)\.\d+"')
+        self.assertRegex(config, r'CURRENT_VERSION = "2\.1[5-9]\.\d+"')
 
     def test_release_revision(self):
         diag = (ROOT / "diagnostics.py").read_text(encoding="utf-8")
