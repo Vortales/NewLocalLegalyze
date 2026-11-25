@@ -311,6 +311,53 @@ class V63CloseCaseTests(unittest.TestCase):
         self.assertIn("_schedule_fresh_chat_after_answer", block)
 
 
+class V63DateCheckTests(unittest.TestCase):
+    """Дата постановления раньше даты обращения — замечание (v63).
+
+    В выгрузке `Постановление.7z` документ этапа 1 был датирован 16.11.2026,
+    а обращение — 25.11.2026: ИИ взял дату из примеров промта.
+    """
+
+    def test_document_before_appeal_is_flagged(self):
+        issue = gdata.check_gov_dates("16.11.2026", "25.11.2026")
+        self.assertIn("раньше даты обращения", issue)
+
+    def test_same_or_later_date_is_fine(self):
+        self.assertEqual(gdata.check_gov_dates("25.11.2026", "25.11.2026"), "")
+        self.assertEqual(gdata.check_gov_dates("26.11.2026", "25.11.2026"), "")
+
+    def test_empty_dates_are_not_issues(self):
+        self.assertEqual(gdata.check_gov_dates("", "25.11.2026"), "")
+        self.assertEqual(gdata.check_gov_dates("16.11.2026", ""), "")
+
+    def test_check_is_wired_into_document_check(self):
+        self.assertIn("check_gov_dates", _src("postanovlenie_prokuror_data.py"))
+
+
+class V63PromptTests(unittest.TestCase):
+    """Промт 1.34 согласован с клиентом v63 (три состояния, даты)."""
+
+    PROMPT = ROOT.parent / "Для новой версии" / "Текущий промт" / "promt 1.34.txt"
+
+    def setUp(self):
+        if not self.PROMPT.is_file():
+            self.skipTest("промт 1.34 вне папки версии")
+        self.text = self.PROMPT.read_text(encoding="utf-8")
+
+    def test_stage1_has_only_three_states(self):
+        self.assertIn("ТРИ СОСТОЯНИЯ ЭТАПА 1", self.text)
+        self.assertNotIn("пять состояний", self.text)
+        self.assertNotIn("«Отказано» или «Прекращено»", self.text)
+
+    def test_chain_markers_match_the_client(self):
+        """Маркеры промта обязаны совпадать с теми, что ищет ogp_stages."""
+        for marker in (ogp_stages.CHAIN_START, ogp_stages.CHAIN_END):
+            self.assertIn(marker, self.text)
+
+    def test_dates_rule_is_explicit(self):
+        self.assertIn("ДАТЫ БЕРУТСЯ ТОЛЬКО ИЗ ОБРАЩЕНИЯ", self.text)
+
+
 class V63PlanSourceTests(unittest.TestCase):
     """План берётся из активного варианта цепочки, а не из отставшей копии."""
 

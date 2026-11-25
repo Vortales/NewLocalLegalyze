@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import re
+import datetime
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -3732,6 +3733,37 @@ GOV_REFUSAL_GROUNDS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _parse_ru_date(value: str):
+    """Дата «25.11.2026» → datetime.date (None — если не разобрать)."""
+    text = str(value or "").strip()
+    match = re.search(r"(\d{1,2})\s*[.\-/]\s*(\d{1,2})\s*[.\-/]\s*(\d{4})", text)
+    if not match:
+        return None
+    day, month, year = (int(part) for part in match.groups())
+    try:
+        return datetime.date(year, month, day)
+    except ValueError:
+        return None
+
+
+def check_gov_dates(doc_date: str, appeal_date: str) -> str:
+    """Замечание, если постановление датировано раньше обращения (v63).
+
+    Выгрузка `Постановление.7z`: документ этапа 1 — «16.11.2026», обращение —
+    «25.11.2026». ИИ подставил дату из примеров промта, и в бланке получилось
+    решение, вынесенное за девять дней до обращения. Пустая дата замечанием не
+    считается: её подставляет клиент.
+    """
+    made = _parse_ru_date(doc_date)
+    appeal = _parse_ru_date(appeal_date)
+    if not made or not appeal or made >= appeal:
+        return ""
+    return ("Дата постановления (" + str(doc_date).strip() +
+            ") раньше даты обращения (" + str(appeal_date).strip() +
+            "): решение не может быть вынесено до поступления обращения. "
+            "Возьмите дату из обращения или дату вынесения решения.")
+
+
 def check_gov_document(doc: PostanovlenieProkurora) -> list:
     """Замечания по постановлению Прокурора. Пустой список = всё в порядке."""
     issues: list = []
@@ -3786,6 +3818,14 @@ def check_gov_document(doc: PostanovlenieProkurora) -> list:
                       "по чьему обращению оно вынесено.")
     if not doc.get("appeal_date") and not doc.get("doc_date"):
         issues.append("Не указана дата обращения — нарушается вводная часть.")
+
+    # 6.1. Дата документа раньше даты обращения (v63). В выгрузке
+    #    `Постановление.7z` постановление датировалось 16.11.2026, а обращение —
+    #    25.11.2026: ИИ подставил дату из примеров промта. Решение не может быть
+    #    вынесено раньше самого обращения.
+    issue = check_gov_dates(doc.get("doc_date"), doc.get("appeal_date"))
+    if issue:
+        issues.append(issue)
 
     # 7. Ссылка на материалы, которых в обращении нет (v37).
     #    В выгрузке AG-2 «УСТАНОВИЛ» утверждал: «Изложенные факты и
