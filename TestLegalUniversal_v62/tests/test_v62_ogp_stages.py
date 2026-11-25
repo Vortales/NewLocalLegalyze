@@ -370,29 +370,41 @@ class SerializeTests(unittest.TestCase):
 
 
 class ImportGuardTests(unittest.TestCase):
-    """v62.1: забытый импорт роняет форму при открытии (краш из лога).
+    """v62.1–v62.2: незаметные пропуски имён роняют форму при открытии.
 
-    Лог `20261125-151551-4292-0d0c1d`: `NameError` в `_build_chain_tab` —
-    в форме использовался `ogp_stages`, но модуль не был импортирован, и окно
-    «Постановление Прокурора» падало при открытии. Тест ловит любой такой
-    пропуск: каждое имя, у которого запрашивается атрибут (`ogp_stages.X`,
-    `gdata.X`), обязано быть импортировано или определено в файле.
+    Два краша подряд из логов пользователя:
+
+    * `20261125-151551-4292-0d0c1d` — `NameError` в `_build_chain_tab`:
+      использовался `ogp_stages`, но модуль не был импортирован;
+    * `20261125-164215-20408-bec` — `NameError` в `_build_requisites`:
+      использовался `QGridLayout`, которого не было в списке импортов
+      `PyQt6.QtWidgets`.
+
+    Оба случая синтаксически корректны, поэтому `py_compile` и проверки по
+    тексту их не видели. Тест разбирает модули через `ast` и требует, чтобы
+    КАЖДОЕ имя, которое читается (в том числе голое `QGridLayout()`), было
+    импортировано или определено в файле.
     """
 
     FILES = ("postanovlenie_prokuror_ui.py", "main.py", "gov_case.py",
              "ogp_stages.py", "ogp_chain.py", "ogp_flow.py")
 
+    #: Встроенные имена, которые Python подставляет сам.
+    BUILTIN_EXTRA = ("__file__", "__name__", "__doc__", "__package__",
+                     "__spec__", "__loader__", "__builtins__")
+
     @staticmethod
     def _available_names(tree):
         import builtins
-        names = set(dir(builtins))
+        names = set(dir(builtins)) | set(ImportGuardTests.BUILTIN_EXTRA)
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 names |= {alias.asname or alias.name.split(".")[0]
                           for alias in node.names}
             elif isinstance(node, ast.ImportFrom):
                 names |= {alias.asname or alias.name for alias in node.names}
-            elif isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                   ast.ClassDef)):
                 names.add(node.name)
             elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
                 names.add(node.id)
@@ -400,17 +412,19 @@ class ImportGuardTests(unittest.TestCase):
                 names.add(node.arg)
             elif isinstance(node, ast.ExceptHandler) and node.name:
                 names.add(node.name)
+            elif isinstance(node, ast.Global):
+                names |= set(node.names)
         return names
 
-    def test_every_module_attribute_is_imported(self):
+    def test_every_used_name_is_defined(self):
         for name in self.FILES:
             tree = ast.parse(_src(name))
             available = self._available_names(tree)
-            used = {node.value.id for node in ast.walk(tree)
-                    if isinstance(node, ast.Attribute)
-                    and isinstance(node.value, ast.Name)}
+            used = {node.id for node in ast.walk(tree)
+                    if isinstance(node, ast.Name)
+                    and isinstance(node.ctx, ast.Load)}
             missing = sorted(used - available)
-            self.assertEqual(missing, [], f"{name}: не импортировано {missing}")
+            self.assertEqual(missing, [], f"{name}: имя не импортировано {missing}")
 
     def test_form_imports_stages_module(self):
         ui = _src("postanovlenie_prokuror_ui.py")
@@ -418,9 +432,19 @@ class ImportGuardTests(unittest.TestCase):
         # форма разбирает ответ ИИ через gdata (в v62 был вызов несуществующего pgov)
         self.assertNotIn("pgov.", ui)
 
+    def test_qt_widgets_used_by_form_are_imported(self):
+        """Каждый Q-класс из формы присутствует в импорте QtWidgets."""
+        ui = _src("postanovlenie_prokuror_ui.py")
+        head = ui[ui.index("from PyQt6.QtWidgets import"):
+                  ui.index("import ai_request")]
+        for widget in ("QGridLayout", "QComboBox", "QScrollArea", "QTabWidget",
+                       "QListWidget", "QPlainTextEdit", "QLabel"):
+            self.assertIn(widget, head, widget)
+
 
 class FormSourceTests(unittest.TestCase):
     """Раскладка формы после v62."""
+
 
     def setUp(self):
         self.ui = _src("postanovlenie_prokuror_ui.py")

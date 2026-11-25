@@ -43,7 +43,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QTextOption
 from PyQt6.QtWidgets import (
     QAbstractScrollArea, QApplication, QComboBox, QDialog, QFileDialog,
-    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QFormLayout, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMessageBox,
     QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QTabWidget,
     QVBoxLayout, QWidget,
