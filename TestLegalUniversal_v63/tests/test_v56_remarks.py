@@ -237,7 +237,7 @@ class V56FactsAreInputTests(unittest.TestCase):
 
     def test_prosecutor_form_does_not_put_facts_into_document(self):
         source = _src("postanovlenie_prokuror_ui.py")
-        block = _block(source, "    def _collect(self)")
+        block = _block(source, "    def _collect(self")
         self.assertIn('doc.set("situation", "")', block)
         self.assertNotIn("doc.prosecutor_facts = self.case.prosecutor_facts()",
                          block)

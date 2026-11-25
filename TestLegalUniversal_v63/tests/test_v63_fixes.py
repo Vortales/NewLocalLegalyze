@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import ast
+import re
 import unittest
 from pathlib import Path
 
@@ -369,13 +370,26 @@ class V63DateCheckTests(unittest.TestCase):
 
 
 class V63PromptTests(unittest.TestCase):
-    """Промт 1.34 согласован с клиентом v63 (три состояния, даты)."""
+    """Текущий промт согласован с клиентом (три состояния, даты).
 
-    PROMPT = ROOT.parent / "Для новой версии" / "Текущий промт" / "promt 1.34.txt"
+    v64: проверяем САМЫЙ СВЕЖИЙ промт в «Для новой версии/Текущий промт»,
+    а не жёстко 1.34 — действующим стал 1.35 (приведён к заголовкам заявок
+    клиента), и каждый следующий выпуск не должен ломать эти проверки.
+    """
 
     def setUp(self):
-        if not self.PROMPT.is_file():
-            self.skipTest("промт 1.34 вне папки версии")
+        folder = ROOT.parent / "Для новой версии" / "Текущий промт"
+        found = []
+        if folder.is_dir():
+            for path in folder.glob("promt 1.*.txt"):
+                match = re.search(r"promt 1\.(\d+)\.txt$", path.name)
+                if match:
+                    found.append((int(match.group(1)), path))
+        if not found:
+            self.skipTest("папка промтов вне версии не найдена")
+        self.PROMPT = max(found)[1]
+        self.assertGreaterEqual(int(re.search(r"1\.(\d+)", self.PROMPT.name).group(1)),
+                                34, "промт старше 1.34")
         self.text = self.PROMPT.read_text(encoding="utf-8")
 
     def test_stage1_has_only_three_states(self):

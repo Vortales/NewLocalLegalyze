@@ -56,7 +56,7 @@ def build_record(*, kind: str, request_text: str, source_path: str = "",
                  stage_index: int = 1, doc_type: str = "",
                  document_kind: str = "gov", title: str = "",
                  appeal_text: str = "", message_text: str = "",
-                 appeal_path: str = "") -> dict:
+                 appeal_path: str = "", node_kind: str = "") -> dict:
     """Что именно отправить после перезапуска (v43.2 / v50).
 
     `kind` — «document» (Сформировать) или «intake» (Проверка ИИ).
@@ -88,6 +88,12 @@ def build_record(*, kind: str, request_text: str, source_path: str = "",
         "source_path": str(source_path or ""),
         "case_number": str(case_number or ""),
         "stage_kind": str(stage_kind or ""),
+        #: v64: узел цепочки («1», «2.1», «3») — ОТДЕЛЬНО от вида этапа.
+        #: Раньше форма клала узел в `stage_kind`, и `stage_number("2.1")`
+        #: давал 3: документ подэтапа уезжал в папку «этап-3 — санкция».
+        #: Старые записи этого поля не имеют — тогда узел ищется в
+        #: `stage_kind` (см. `main._load_pending_fields`).
+        "node_kind": str(node_kind or ""),
         "stage_index": int(stage_index or 1),
         "doc_type": _clean(doc_type),
         "created_at": time.time(),

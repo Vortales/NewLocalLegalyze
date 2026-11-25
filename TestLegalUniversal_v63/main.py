@@ -5907,9 +5907,9 @@ class MainWindow(QMainWindow):
             # сразу — клиент перезапускается с чистым чатом, и уже после
             # перезапуска заявка уходит в ИИ.
             dlg.restart_requested.connect(self._on_pending_send_restart)
-            # v62: «Сформировать» у каждого этапа/подэтапа печатает .png по
-            # ответу ИИ (в ИИ при этом ничего не уходит).
-            dlg.print_node_document.connect(self._print_gov_node)
+            # v64: «Сформировать» — это ЗАЯВКА НА ДОКУМЕНТ в чат (решение
+            # пользователя), поэтому отдельного сигнала печати нет: .png
+            # собирает `_apply_gov_answer` из ответа ИИ.
             # v63: заявка подэтапа этапа 2 и этапа 3 уходит в текущий диалог —
             # без перезагрузки браузера, чтобы ИИ помнил прошлые этапы.
             dlg.send_in_chat.connect(self._on_send_in_chat)
@@ -6152,7 +6152,10 @@ class MainWindow(QMainWindow):
         self._doc_request_text = str(record.get("request_text") or "")
         self._doc_case_number = str(record.get("case_number") or "")
         self._doc_stage_kind = str(record.get("stage_kind") or "")
-        self._doc_node_kind = str(record.get("stage_kind") or "")
+        # v64: узел цепочки — в своём поле записи; старые записи держали его в
+        # `stage_kind`, поэтому читаем оба варианта.
+        self._doc_node_kind = str(record.get("node_kind")
+                                  or record.get("stage_kind") or "")
         self._doc_request_mode = "document"
         self._doc_handled_text = None
         self._doc_last_text = None
@@ -6441,7 +6444,11 @@ class MainWindow(QMainWindow):
         self._doc_stage_kind = str(record.get("stage_kind") or "")
         # v62: узел цепочки («1», «2.1», «3»); служебная запись калибровки
         # порядка приходит с меткой `__reorder__`.
-        self._doc_node_kind = str(record.get("stage_kind") or "")
+        # v64: узел берётся из своего поля записи (`node_kind`), а
+        # `stage_kind` остаётся ВИДОМ этапа — иначе `stage_number("2.1")`
+        # давал 3 и документ подэтапа уезжал в папку «этап-3 — санкция».
+        self._doc_node_kind = str(record.get("node_kind")
+                                  or record.get("stage_kind") or "")
         diag.event("pending_send.fields_loaded", kind=kind,
                    stage=doc.get("case_stage_kind"), stage_doc=doc.get("doc_stage"),
                    number=doc.get("doc_number"), type=str(doc.get("doc_type"))[:40])
@@ -6852,90 +6859,6 @@ class MainWindow(QMainWindow):
             self._doc_gov_assets_cache = pgov.gov_assets(self._program_dir())
             diag.event("documents.gov_assets", **self._doc_gov_assets_cache.describe())
         return self._doc_gov_assets_cache
-
-    # v62.4: сигнатура слота обязана совпадать с сигналом
-    # `print_node_document = pyqtSignal(object, object, str)`. Здесь стояло
-    # `@pyqtSlot(object, str, object)`, и PyQt падал с TypeError прямо на
-    # `connect()` — «Новое обращение» вообще не открывалось (лог
-    # 20261125-202752-17212-a6ba4d, main.py:5912).
-    @pyqtSlot(object, object, str)
-    def _print_gov_node(self, node_kind, doc, raw_text):
-        """«Сформировать» у узла цепочки: постановление → .png (v62).
-
-        Отдельная кнопка у каждого этапа/подэтапа. В ИИ ничего не уходит:
-        документ собирается из поля 2 (ответ ИИ) и реквизитов формы, а PNG
-        ложится в папку своего узла («эт.1», «эт.2.N», «эт.3») — так
-        постановления разных этапов не затирают друг друга.
-        """
-        root = self._documents_root()
-        node_kind = str(node_kind or "").strip()
-        case_number = (getattr(self, "_doc_case_number", "")
-                       or getattr(self, "_gov_intake_case", "") or "")
-        try:
-            store = self._document_case_store()
-            case = store.find(case_number) if case_number else None
-            if case is None:
-                case = pcases.GovCase(number=case_number or store.next_number())
-            stage_kind = pcases.STAGE_INTAKE
-            stage_index = case.stage_number(pcases.STAGE_INTAKE)
-            step_number = 0
-            if node_kind == "3":
-                stage_kind = pcases.STAGE_CLOSE
-                stage_index = case.stage_number(pcases.STAGE_CLOSE)
-            elif node_kind.startswith("2."):
-                stage_kind = pcases.STAGE_MEASURE
-                stage_index = case.stage_number(pcases.STAGE_MEASURE)
-                step_number = int(node_kind.split(".")[-1] or 0)
-            # Документ: ответ ИИ + реквизиты формы.
-            base = pgov.PostanovlenieProkurora()
-            if isinstance(doc, pgov.PostanovlenieProkurora):
-                base = doc
-            number = base.get("doc_number") or case.number
-            pages = prender.render_document(base, self._document_gov_assets())
-            folder = pcases.stage_folder(
-                root, number, stage_index, stage_kind,
-                case_number=case.number, step_number=step_number,
-                doc_type=base.get("doc_type"))
-            stem = pcases.stage_stem(number, stage_index, stage_kind,
-                                     base.get("doc_type"),
-                                     step_number=step_number)
-            if node_kind and f"эт.{node_kind}" not in stem:
-                stem = f"{stem} — эт.{node_kind}"
-            paths = prender.save_pages(pages, folder, stem)
-            (folder / "ИИ-документ.txt").write_text(base.to_document_txt(),
-                                                    encoding="utf-8")
-            (folder / "ИИ-поля.json").write_text(
-                json.dumps(base.to_dict(), ensure_ascii=False, indent=2),
-                encoding="utf-8")
-        except Exception as exc:
-            diag.exception("gov.node.render")
-            QMessageBox.warning(self, "PNG не сохранён",
-                                f"Не удалось собрать постановление:\n{root}\n\n{exc}")
-            return
-        # Дело: PNG запоминается у узла цепочки — форма показывает индикатор.
-        try:
-            case.set_work_node(node_kind,
-                               png=str(paths[0]) if paths else "",
-                               doc_number=str(base.get("doc_number") or ""),
-                               when=datetime.now().strftime("%d.%m.%Y %H:%M"))
-            store.save(case)
-        except Exception:
-            diag.exception("gov.node.mark")
-        try:
-            self._document_pngs = paths
-            self._document_gov_history().replace(base)
-        except Exception:
-            diag.exception("gov.node.history")
-        diag.event("gov.node.printed", node=node_kind, pngs=len(paths),
-                   folder=str(folder))
-        self._set_status(f"Постановление этапа {node_kind}: PNG сохранён",
-                         THEME["ok"])
-        dialog = getattr(self, "_gov_dialog", None)
-        if dialog is not None:
-            try:
-                dialog.refresh_case(case)
-            except Exception:
-                diag.exception("gov.node.refresh")
 
     def _on_document_formed(self, document, chat_txt, pngs):
         """Документ сформирован: прикладываем .txt, ждём ответ ИИ, собираем PNG."""
@@ -7439,7 +7362,13 @@ class MainWindow(QMainWindow):
             # печатается или это не тот ответ — постановление не разбираем.
             self._apply_gov_intake(text)
             return
-        if self._apply_gov_intake(text):
+        # v64: страницу ИИ после «Сформировать» и после PNG не чистим, поэтому
+        # в чате остаётся служебный блок этапа 1. Если ждём ДОКУМЕНТ и он уже
+        # есть в тексте — разбираем документ, а не перечитываем проверку
+        # обращения заново (иначе узел «1» перезаписывался на каждом опросе).
+        if mode == "document" and pdoc.has_document_trigger(text):
+            pass
+        elif self._apply_gov_intake(text):
             # v45: служебный блок проверки обращения мог остаться в чате от
             # прошлого запроса. Если ждём ПОСТАНОВЛЕНИЕ, а пришёл только он —
             # это не наш ответ, продолжаем ждать документ.
@@ -7603,10 +7532,15 @@ class MainWindow(QMainWindow):
             # обращения, поле 2 (ответ ИИ) — весь ответ: «Обстоятельства»
             # этапа 1 показывают решение по-человечески.
             state1 = ogp_stages.stage1_from_outcome(outcome)
+            # v64: в поле 2 «Ответ ИИ» — только ответ, без страницы чата.
+            # Сырой текст остаётся в файле дела («Проверка обращения.txt»).
+            answer_text = pgov.extract_ai_answer(
+                text, str(getattr(self, "_gov_intake_text", "") or ""))
             case.set_work_node("1", input=str(case.appeal_raw or ""),
-                               answer=str(text or ""), stale=False, done=True,
+                               answer=answer_text or str(text or ""),
+                               stale=False, done=True,
                                when=datetime.now().strftime("%d.%m.%Y %H:%M"),
-                               verdict=ogp_stages.verdict_of(text))
+                               verdict=ogp_stages.verdict_of(answer_text or text))
             if state1 == ogp_stages.STATE_ACCEPT:
                 # v62: ИИ присылает минимум три варианта цепочки; старый
                 # одиночный план остаётся вариантом «A», прогресс цепочек
@@ -7996,7 +7930,14 @@ class MainWindow(QMainWindow):
         except Exception:
             saved_text = text
 
-        doc = pgov.parse_gov_answer(saved_text, base=base_doc)
+        # v64: разбираем и храним ЧИСТЫЙ ответ ИИ. Со страницы чата текст
+        # приходит вместе с эхом нашей заявки, чипами вложений
+        # («Memphis.pdf / PDF», «Шаблон.txt / File») и элементами интерфейса;
+        # раньше этот мусор оседал в `situation` и печатался в «УСТАНОВИЛ»
+        # (выгрузка `этап-1 — принятие.7z`). Сырьё остаётся в «ИИ-ответ.txt».
+        answer_text = pgov.extract_ai_answer(
+            saved_text, str(getattr(self, "_doc_request_text", "") or ""))
+        doc = pgov.parse_gov_answer(answer_text or saved_text, base=base_doc)
         if doc is None:
             self._set_status("Ответ ИИ сохранён, но постановление не собрано", "#f59e0b")
             QMessageBox.warning(
@@ -8096,9 +8037,12 @@ class MainWindow(QMainWindow):
             # подэтап считается пройденным, когда пришёл ответ, а поле 1 не
             # менялось после него.
             if node_kind:
-                verdict = ogp_stages.verdict_of(saved_text)
+                # v64: в узел пишется чистый ответ ИИ (`answer_text` выше) —
+                # его же видит прокурор в поле 2 и его же клиент отправляет ИИ
+                # как память дела по следующему этапу.
+                verdict = ogp_stages.verdict_of(answer_text or saved_text)
                 case.set_work_node(node_kind,
-                                   answer=str(saved_text or ""),
+                                   answer=answer_text or str(saved_text or ""),
                                    stale=False,
                                    done=True,
                                    doc_number=doc.get("doc_number", ""),

@@ -31,6 +31,10 @@ from __future__ import annotations
 
 import re
 
+#: v64: разбор служебных блоков ответа ИИ (проверка обращения, цепочки,
+#: рекомендации) живёт в модуле данных прокуратуры; цикла нет — он
+#: `ogp_stages` не импортирует.
+import postanovlenie_prokuror_data as gdata
 import ogp_chain
 
 # --------------------------------------------------------------------------- #
@@ -258,6 +262,65 @@ def chains_present(text: str) -> bool:
     raw = str(text or "")
     return (CHAIN_START in raw or bool(_CHAIN_START_SOFT.search(raw))
             or ogp_chain.plan_present(raw))
+
+
+#: Маркеры блока рекомендаций прокурору (промт 1.34, п.8.1.3). Блок служебный:
+#: в постановление он не идёт, а показывается прокурору подсказкой в «Цепочке
+#: этапов» (решение пользователя по выгрузке `этап-1 — принятие.7z`).
+_RECO_START_SOFT = re.compile(r"=*\s*РЕКОМЕНДАЦИИ\s*=*", re.I)
+_RECO_END_SOFT = re.compile(r"=*\s*КОНЕЦ\s+РЕКОМЕНДАЦИЙ\s*=*", re.I)
+
+
+def split_recommendations(text: str) -> list:
+    """Пункты блока «РЕКОМЕНДАЦИИ» из ответа этапа 1 (v64).
+
+    Возвращает список строк ``{n, text}`` — что сделать прокурору до первого
+    постановления этапа 2, на что посмотреть в доказательствах и чем дело
+    скорее всего закончится. Пустой список, если блока нет.
+    """
+    raw = _plain_markers(str(text or ""))
+    start = _RECO_START_SOFT.search(raw)
+    if start is None:
+        return []
+    body = raw[start.end():]
+    end = _RECO_END_SOFT.search(body)
+    if end is not None:
+        body = body[:end.start()]
+    rows: list = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        step = _STEP_LINE.match(stripped)
+        if step:
+            rows.append({"n": len(rows) + 1, "text": step.group(2).strip(" .")})
+            continue
+        bullet = re.match(r"^\s*(?:[-*•]|\d{1,2}[.)])\s*(.+)$", stripped)
+        rows.append({"n": len(rows) + 1,
+                     "text": (bullet.group(1) if bullet else stripped).strip(" .")})
+    return rows[:MAX_STEPS]
+
+
+def answer_for_context(case, kind) -> str:
+    """Ответ узла, который можно показать ИИ как память дела (v64).
+
+    В узле «1» лежит служебный ответ этапа 1: блок проверки, варианты цепочки
+    и рекомендации. Цепочки заявка печатает отдельно (`chain_progress`), а
+    рекомендации — подсказка прокурору, ИИ они не нужны. Поэтому от этапа 1 в
+    контекст идёт только блок «ПРОВЕРКА ОБРАЩЕНИЯ … КОНЕЦ ПРОВЕРКИ».
+    """
+    answer = str(case.work_node(kind).get("answer", "") or "").strip()
+    if not answer:
+        return ""
+    if str(kind) == "1":
+        start = gdata._INTAKE_BLOCK_START.search(answer)
+        if start is not None:
+            body = answer[start.start():]
+            end = gdata._INTAKE_BLOCK_END.search(body)
+            if end is not None:
+                body = body[:end.end()]
+            return body.strip()
+    return gdata.strip_service_blocks(answer).strip()
 
 
 # --------------------------------------------------------------------------- #
@@ -630,9 +693,13 @@ def context_block(case, current: str = "") -> str:
             lines.append(f"Основание: {case.intake_basis}")
         if node1.get("input"):
             lines.append(f"Что ввёл прокурор: {_short(node1['input'])}")
-        if node1.get("answer"):
+        # v64: в контекст идёт только служебный блок этапа 1 — без цепочек
+        # (они напечатаны ниже отдельными строками) и без рекомендаций (это
+        # подсказка прокурору, ИИ она не нужна).
+        answer1 = answer_for_context(case, "1")
+        if answer1:
             lines.append("Ответ ИИ по этапу 1:")
-            lines.append(str(node1["answer"]).strip())
+            lines.append(answer1)
         lines.append("")
     if state != STATE_ACCEPT:
         return "\n".join(lines).rstrip() + "\n"
@@ -647,7 +714,7 @@ def context_block(case, current: str = "") -> str:
     for step in _plan(case):
         number = int(step.get("n") or 0)
         node = case.work_node(f"2.{number}")
-        answer = str(node.get("answer", "") or "").strip()
+        answer = answer_for_context(case, f"2.{number}")
         user_input = str(node.get("input", "") or "").strip()
         if not answer and not user_input:
             continue
@@ -669,9 +736,10 @@ def context_block(case, current: str = "") -> str:
         lines.append("ЭТАП 3 — итог")
         if node3.get("input"):
             lines.append("  Что ввёл прокурор: " + str(node3["input"]).strip())
-        if node3.get("answer"):
+        answer3 = answer_for_context(case, "3")
+        if answer3:
             lines.append("  Ответ ИИ:")
-            for line in str(node3["answer"]).splitlines():
+            for line in answer3.splitlines():
                 lines.append("    " + line)
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"

@@ -174,9 +174,24 @@ STAGE_META: dict = {
 }
 
 
+#: Узел цепочки («1», «2.1», «3», «эт.2.1») — НЕ вид этапа. v64: запись
+#: отложенной отправки клала узел в `stage_kind`, и дальше
+#: `stage_number("2.1")` давал 3, а `gov_stage_for_kind("2.1")` — «primary»:
+#: документ подэтапа 2.1 уезжал в папку «этап-3 — санкция» с этапом 1 в полях.
+_NODE_KIND = re.compile(r"^(?:эт\.)?(?:1|2\.\d{1,2}|3)$")
+
+
+def _normalize_stage_kind(kind) -> str:
+    """Узел цепочки приводится к виду этапа; виды этапов не меняются."""
+    key = str(kind or "").strip()
+    if _NODE_KIND.match(key):
+        return stage_kind_for_node(key)
+    return key
+
+
 def stage_meta(kind: str) -> dict:
     """Описание этапа (для незнакомого вида — описание санкции)."""
-    return STAGE_META.get(kind, STAGE_META[STAGE_MEASURE])
+    return STAGE_META.get(_normalize_stage_kind(kind), STAGE_META[STAGE_MEASURE])
 
 
 def stage_short(kind: str) -> str:
@@ -261,6 +276,7 @@ def stage_index_for(plan, kind: str) -> int:
     «санкция» — этап 2, а дополнительный этап получает следующий свободный
     номер.
     """
+    kind = _normalize_stage_kind(kind)
     order = []
     for item in plan or ():
         name = item.get("kind") if isinstance(item, dict) else item
@@ -321,10 +337,19 @@ INTAKE_STATUS_MAP: dict = {
 
 
 def parse_intake_answer(text: str) -> dict:
-    """Результат проверки ИИ + состояние дела (обёртка над данными)."""
+    """Результат проверки ИИ + состояние дела (обёртка над данными).
+
+    v64: в `raw` (а значит в `case.intake_answer` и в поле 2 «Ответ ИИ»)
+    кладётся ЧИСТЫЙ ответ ИИ, а не весь текст страницы чата с эхом заявки,
+    чипами вложений и элементами интерфейса — замечание пользователя по
+    выгрузке `этап-1 — принятие.7z`: «в поле „Ответ ИИ (только чтение)“ каша,
+    всё вперемешку». Разбор служебных строк при этом идёт по исходному тексту:
+    он терпимее к мусору страницы.
+    """
     result = gdata.parse_intake_answer(text)
     result["status"] = INTAKE_STATUS_MAP.get(result.get("state", ""), "")
     result["ok"] = bool(result.get("state") and result["status"])
+    result["raw"] = gdata.extract_ai_answer(text) or str(text or "")
     return result
 
 
@@ -352,6 +377,13 @@ class GovCase:
     intake_basis: str = ""
     #: Сырой ответ ИИ на проверку — чтобы прокурор мог перечитать решение.
     intake_answer: str = ""
+    #: v64: «Вид решения» из ответа этапа 1 — по нему «Сформировать» просит ИИ
+    #: вынести ДОКУМЕНТ этапа 1 («О принятии обращения к собственному
+    #: производству» и т. п.).
+    intake_doc_type: str = ""
+    #: v64: блок «РЕКОМЕНДАЦИИ» из ответа этапа 1 — подсказка прокурору
+    #: («Цепочка этапов»). В постановление и в контекст ИИ не попадает.
+    recommendations: list = field(default_factory=list)
     #: Сколько раз обращение отправлялось на проверку ИИ (v43.4). Поле было
     #: «временным атрибутом»: `to_dict()` его не сохранял, в `case.json` его не
     #: было, и после перезапуска счётчик обнулялся.
@@ -851,6 +883,10 @@ class GovCase:
                 f"решение прокурора вопреки ответу ИИ ({ai_basis})"
                 if ai_basis else "решение прокурора вопреки ответу ИИ")
             self.intake_answer = str(result.get("raw", "") or "")
+            self.intake_doc_type = _clean(result.get("doc_type_raw", "")
+                                          or result.get("doc_type", ""))
+            self.set_recommendations(
+                ogp_stages.split_recommendations(self.intake_answer))
             self.mark_stage(STAGE_INTAKE, accepted=True)
             self.touch()
             return
@@ -860,6 +896,11 @@ class GovCase:
         self.status = status
         self.intake_basis = _clean(result.get("basis", ""))
         self.intake_answer = str(result.get("raw", "") or "")
+        # v64: вид решения этапа 1 и рекомендации ИИ — из того же ответа.
+        self.intake_doc_type = _clean(result.get("doc_type_raw", "")
+                                      or result.get("doc_type", ""))
+        self.set_recommendations(
+            ogp_stages.split_recommendations(self.intake_answer))
         # v49: реквизиты обращения — из ключевых слов ответа ИИ, а не из
         # локального разбора текста обращения.
         self.apply_keywords(result.get("keywords") or {})
@@ -1116,6 +1157,19 @@ class GovCase:
         self.touch()
         return True
 
+    def set_recommendations(self, rows) -> None:
+        """Рекомендации ИИ прокурору (блок «РЕКОМЕНДАЦИИ» ответа этапа 1)."""
+        prepared = []
+        for row in rows or []:
+            if isinstance(row, dict):
+                text = _clean(row.get("text", ""))
+                if text:
+                    prepared.append({"n": len(prepared) + 1, "text": text})
+            elif _clean(row):
+                prepared.append({"n": len(prepared) + 1, "text": _clean(row)})
+        self.recommendations = prepared
+        self.touch()
+
     def touch(self) -> None:
         self.updated_at = time.time()
 
@@ -1144,6 +1198,10 @@ class GovCase:
         # поля не имеют — тогда считается, что ИИ туда ничего не писал).
         ai_facts = data.get("ai_facts")
         case.ai_facts = dict(ai_facts) if isinstance(ai_facts, dict) else {}
+        # v64: рекомендации ИИ (список словарей) — как `work_plan`.
+        reco = data.get("recommendations")
+        case.recommendations = [dict(row) for row in reco if isinstance(row, dict)] \
+            if isinstance(reco, list) else []
         # v60: цепочка этапов и исход этапа 1. Старые дела (v59 и раньше)
         # этих полей не имеют: исход восстанавливается из статуса.
         plan = data.get("work_plan")
@@ -1596,6 +1654,98 @@ def node_request(case: GovCase, kind, prosecutor: str = "") -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def node_document_request(case: GovCase, kind, prosecutor: str = "") -> str:
+    """Заявка кнопки «Сформировать»: ДОКУМЕНТ по узлу (v64).
+
+    Решение пользователя по выгрузке `этап-1 — принятие.7z`: «по нажатию
+    „Сформировать“ ДЛЯ ВСЕХ ЭТАПОВ данные отправляются в ИИ и по ответу ты уже
+    формируешь .png постановление… находясь на „Этап 2.2 — Об истребовании“
+    при нажатии „Сформировать“ в чат с ИИ должна попасть информация из полей
+    „Что стало известно“ + „Ответ ИИ“ от Этап 1, Этап 2.1, Этап 2.2».
+
+    Отличия от `node_request` (кнопка этапа — решение ИИ по узлу):
+
+    * на этапе 1 ответом был служебный блок, а не документ, поэтому «Вид
+      документа» здесь называется явно — из «Вид решения:» ответа этапа 1;
+    * в контекст идут ОТВЕТЫ ИИ, очищенные от мусора страницы чата
+      (`ogp_stages.answer_for_context`): без цепочек и рекомендаций, которые
+      заявка и так печатает отдельными строками;
+    * ответ требуется ОДНИМ блоком постановления: служебные блоки ИИ уже
+      присылал, повторять их не нужно (иначе они уезжают в «УСТАНОВИЛ»).
+
+    Весь текст уходит вложением .txt, в поле запроса печатается короткая
+    реплика (`ai_request.document_message`) — «прямой текст по минимуму».
+    """
+    parsed = ogp_stages.parse_node(kind)
+    etap, step = parsed["etap"], parsed["step"]
+    node = case.work_node(kind)
+    user_input = str(node.get("input", "") or "").strip()
+    stage_kind = _normalize_stage_kind("measure" if etap == 2 else
+                                       ("intake" if etap == 1 else "close"))
+    label = {1: "1", 2: f"2.{step}", 3: "3"}[etap]
+    lines: list = [
+        f"ЗАЯВКА НА ПОСТАНОВЛЕНИЕ ПО ОБРАЩЕНИЮ (этап {label}) — ДОКУМЕНТ",
+    ]
+    if prosecutor:
+        lines.append(f"Прокурор: {prosecutor}")
+    lines.append("")
+    lines.append(ogp_stages.context_block(case, kind))
+    if etap == 1:
+        doc_type = _clean(getattr(case, "intake_doc_type", "")) or \
+            gdata.auto_type_for(gdata.GOV_STAGE_PRIMARY)
+        lines.append(f"ЗАДАЧА: вынеси постановление этапа 1 — «{doc_type}».")
+        lines.append("Это ПЕРВИЧНОЕ решение по обращению: только принятие к "
+                     "производству, отказ в принятии, переадресация или "
+                     "прекращение. Санкцию не назначай, уголовное дело не "
+                     "возбуждай, штраф не выписывай.")
+        if case.intake_basis:
+            lines.append(f"ОСНОВАНИЕ ЭТАПА 1 (из проверки обращения): "
+                         f"{case.intake_basis}")
+    elif etap == 2:
+        current = {}
+        for item in case.work_plan or []:
+            if int(item.get("n") or 0) == step:
+                current = item
+                break
+        total = len(case.work_plan or [])
+        lines.append(f"ЗАДАЧА: вынеси постановление по подэтапу 2.{step} из "
+                     f"{total} — «{current.get('title', '')}».")
+        if current.get("why"):
+            lines.append(f"ЗАЧЕМ ЭТОТ ПОДЭТАП: {current.get('why')}")
+        lines.append(f"ВАРИАНТ ЦЕПОЧКИ: {case.work_letter} — "
+                     f"{case.active_chain().get('title', '')}")
+        done = [f"2.{int(s.get('n') or 0)}) {s.get('title', '')}"
+                for s in case.work_plan or [] if s.get("done")]
+        if done:
+            lines.append("УЖЕ ВЫНЕСЕНО ПО ДЕЛУ: " + "; ".join(done))
+        rest = [f"2.{int(s.get('n') or 0)}) {s.get('title', '')}"
+                for s in case.work_plan or [] if not s.get("done")]
+        if rest:
+            lines.append("ОСТАЛОСЬ ПО ПЛАНУ: " + "; ".join(rest))
+        lines.append("Вынеси РОВНО этот документ и не подменяй его итоговым "
+                     "решением по обращению. В резолюции однозначно скажи, "
+                     "выполнен ли подэтап или нет: по этой фразе клиент "
+                     "определит итог шага.")
+    else:
+        lines.append("ЗАДАЧА: прими ИТОГОВОЕ решение по обращению (этап 3).")
+        lines.append("Вид завершения выбери сам по смыслу обращения, решения "
+                     "этапа 1 и всех пройденных подэтапов этапа 2 и обоснуй "
+                     "нормой.")
+    if user_input:
+        lines.append("")
+        lines.append("ЧТО СТАЛО ИЗВЕСТНО (ввод прокурора, учти обязательно):")
+        lines.append(user_input)
+    lines.append("")
+    lines.append("Ответь ОДНИМ блоком постановления: поля документа, "
+                 "мотивировочная часть и резолюция с нумерованными пунктами. "
+                 "Служебные блоки (проверка обращения, цепочки этапа 2, "
+                 "рекомендации прокурору) уже получены ранее — в этом ответе "
+                 "их повторять не нужно.")
+    lines.append("")
+    lines.append(doc_placeholder())
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def doc_placeholder() -> str:
     """Напоминание о формате документа (маркеры заданы в промте)."""
     return ("Поля документа заполни по делу; «УСТАНОВИЛ» — установленные "
@@ -1631,7 +1781,14 @@ def reorder_request(case: GovCase, prosecutor: str = "") -> str:
 
 
 def stage_request(case: GovCase, kind: str, doc) -> str:
-    """Заявка для ИИ на конкретный этап (в дополнение к `to_chat_txt`)."""
+    """Заявка для ИИ на конкретный этап (в дополнение к `to_chat_txt`).
+
+    v64: НЕ ИСПОЛЬЗУЕТСЯ — форму отправляют `node_request` (кнопка этапа) и
+    `node_document_request` (кнопка «Сформировать»). Промт выравнивается по
+    активным заявкам; строки «МЕСТО В ЦЕПОЧКЕ», «НАЗВАНИЕ ШАГА» и
+    «ОБСТОЯТЕЛЬСТВА, УСТАНОВЛЕННЫЕ ПРОКУРОРОМ» клиент больше не отправляет.
+    Функция оставлена, потому что на неё есть проверки истории замечаний.
+    """
     meta = stage_meta(kind)
     lines = [
         f"ЭТАП: {meta['title']}",
@@ -1767,8 +1924,13 @@ def stage_kind_for_gov_stage(stage: str) -> str:
 
 
 def gov_stage_for_kind(kind: str) -> str:
-    """Этап документа по виду этапа дела (v49)."""
-    return KIND_TO_GOV_STAGE.get(str(kind or ""), gdata.GOV_STAGE_PRIMARY)
+    """Этап документа по виду этапа дела (v49).
+
+    v64: принимает и узел цепочки («2.1») — иначе подэтап этапа 2 получал
+    `doc_stage = primary` (этап 1) и неверный «Вид документа» по умолчанию.
+    """
+    return KIND_TO_GOV_STAGE.get(_normalize_stage_kind(kind),
+                                 gdata.GOV_STAGE_PRIMARY)
 
 
 def stage_kind_for_node(node: str) -> str:

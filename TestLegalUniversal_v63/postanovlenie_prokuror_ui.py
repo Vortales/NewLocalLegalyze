@@ -37,6 +37,7 @@
 from __future__ import annotations
 
 import json
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -333,8 +334,6 @@ class PostanovlenieProkuroraDialog(QDialog):
     #: Заявка готова, но отправлять её нужно ПОСЛЕ перезапуска (v43.2):
     #: (запись отложенной отправки, путь к .txt заявки).
     restart_requested = pyqtSignal(object, str)
-    #: v62: нажата «Сформировать» у узла цепочки: (узел, документ, ответ ИИ).
-    print_node_document = pyqtSignal(object, object, str)
     #: v63: нажата «Закрыть обращение» на этапе 3: (номер дела).
     case_closed = pyqtSignal(str)
     #: v63: заявка узла 2.N / 3 уходит в ТЕКУЩИЙ диалог, без перезагрузки
@@ -639,7 +638,9 @@ class PostanovlenieProkuroraDialog(QDialog):
             return
         if str(kind).startswith("2."):
             self.case.work_step = int(str(kind).split(".")[-1] or 0)
-        doc = self._collect()
+        # v64: документ — для ЭТОГО узла (этап, вид решения, номер), а не для
+        # активного: иначе заявка подэтапа 2.1 уносила этап активного узла.
+        doc = self._collect(kind)
         step_number = int(str(kind).split(".")[-1]) if str(kind).startswith("2.") else 0
         if kind == "1":
             stage_kind, stage_index, title = (
@@ -658,6 +659,7 @@ class PostanovlenieProkuroraDialog(QDialog):
             stage_index = self.case.stage_number(cases.STAGE_MEASURE)
             title = f"Постановление 2.{step_number} — {step_title}"
         try:
+            stage_index = self.case.stage_number(stage_kind)
             folder = cases.stage_folder(
                 self._documents_root(), doc.get("doc_number") or self.case.number,
                 stage_index, stage_kind, case_number=self.case.number)
@@ -665,6 +667,12 @@ class PostanovlenieProkuroraDialog(QDialog):
                 self.case, kind, self._prosecutor_name())
             request_path = folder / "Заявка (отправлено в чат).txt"
             request_path.write_text(request_text, encoding="utf-8")
+            # v64: снимок полей рядом с заявкой — по нему main.py восстановит
+            # этап, номер дела и вид решения, когда придёт ответ ИИ
+            # (`_load_pending_fields`).
+            (folder / "Заявка-поля.json").write_text(
+                json.dumps({"поля": doc.to_dict()}, ensure_ascii=False, indent=2),
+                encoding="utf-8")
             self.chat_txt_path = str(request_path)
             appeal_path = ai_request.write_appeal_file(
                 folder, str(self.case.appeal_raw or ""))
@@ -680,10 +688,15 @@ class PostanovlenieProkuroraDialog(QDialog):
                 appeal_text=str(self.case.appeal_raw or ""),
                 source_path=str(request_path),
                 case_number=str(self.case.number),
-                stage_kind=str(kind),
+                # v64: `stage_kind` — ВИД этапа, узел цепочки идёт отдельно.
+                # Раньше здесь лежал узел («2.1»), и `stage_number("2.1")`
+                # давал 3: документ подэтапа уезжал в папку «этап-3 — санкция»
+                # с этапом 1 в полях документа.
+                stage_kind=cases.stage_kind_for_node(str(kind)),
                 stage_index=stage_index,
                 doc_type=doc.get("doc_type"),
                 document_kind="gov",
+                node_kind=str(kind),
                 title=f"{title} · Обращение №{self.case.number}")
             pending_send.save(self._documents_root(), record)
         except Exception as exc:
@@ -709,23 +722,90 @@ class PostanovlenieProkuroraDialog(QDialog):
     # ------------------------------------------- v62: «Сформировать» для узла
 
     def _save_node_document(self, kind) -> None:
-        """Отдельная кнопка «Сформировать»: .png постановления узла (v62).
+        """«Сформировать»: заявка на ДОКУМЕНТ узла уходит в чат ИИ (v64).
 
-        Документ собирается из поля 2 (ответ ИИ) и реквизитов: в ИИ ничего не
-        уходит, это только печать.
+        Решение пользователя по выгрузке `этап-1 — принятие.7z`: «по нажатию
+        „Сформировать“ ДЛЯ ВСЕХ ЭТАПОВ данные отправляются в ИИ и по ответу ты
+        уже формируешь .png постановление… в чат с ИИ должна попасть
+        информация из полей „Что стало известно“ + „Ответ ИИ“ от Этап 1,
+        Этап 2.1, Этап 2.2 (если есть)», и «желательно всю информацию в .txt
+        файле, прямой текст по минимуму».
+
+        Поэтому кнопка больше не печатает PNG из сохранённого ответа: она
+        готовит заявку (`gov_case.node_document_request`), кладёт её файлом
+        рядом с делом и отдаёт в чат короткой репликой. PNG печатает ответ ИИ
+        (`main._apply_gov_answer`), он же заменяет поле 2 «Ответ ИИ».
+
+        Страница ИИ при этом НЕ перезагружается: «Сформировать» работает в
+        текущем диалоге, где уже лежат ответы этапов 1…N.
         """
-        state = ogp_stages.node_state(self.case, kind)
-        if not state.get("can_save"):
-            QMessageBox.information(
-                self, "Нечего печатать",
-                "По этому этапу ещё нет ответа ИИ. Нажмите кнопку этапа, "
-                "дождитесь ответа и повторите.")
+        kind = str(kind or "").strip()
+        if not str(self.case.appeal_raw or "").strip():
+            QMessageBox.information(self, "Обращение",
+                                    "Вставьте текст обращения целиком.")
             return
-        raw = str(self.case.work_node(kind).get("answer", "") or "")
-        doc = gdata.parse_gov_answer(raw, base=self._collect())
-        if doc is None:
-            doc = self._collect()
-        self.print_node_document.emit(str(kind), doc, raw)
+        state = ogp_stages.node_state(self.case, kind)
+        if not state.get("can_run"):
+            QMessageBox.information(self, "Сформировать", state.get("hint", "")
+                                    or "Этот этап ещё нельзя выносить.")
+            return
+        if kind.startswith("2."):
+            self.case.work_step = int(kind.split(".")[-1] or 0)
+        stage_kind = cases.stage_kind_for_node(kind)
+        stage_index = self.case.stage_number(stage_kind)
+        step_number = int(kind.split(".")[-1]) if kind.startswith("2.") else 0
+        doc = self._collect(kind)
+        title = {"1": "Этап 1", "3": "Этап 3"}.get(
+            kind, f"Этап {kind}")
+        try:
+            folder = cases.stage_folder(
+                self._documents_root(), doc.get("doc_number") or self.case.number,
+                stage_index, stage_kind, case_number=self.case.number,
+                step_number=step_number, doc_type=doc.get("doc_type"))
+            request_text = cases.node_document_request(
+                self.case, kind, self._prosecutor_name())
+            request_path = folder / "Заявка (Сформировать).txt"
+            request_path.write_text(request_text, encoding="utf-8")
+            # Документ этапа — рядом с заявкой: по нему main.py восстановит
+            # этап, номер дела и вид решения, когда придёт ответ ИИ.
+            (folder / "Заявка-поля.json").write_text(
+                json.dumps({"поля": doc.to_dict()}, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+            appeal_path = ai_request.write_appeal_file(
+                folder, str(self.case.appeal_raw or ""))
+            self.chat_txt_path = str(request_path)
+            self.appeal_txt_path = str(appeal_path)
+            self.png_paths = []
+            self.cases.save(self.case)
+            record = pending_send.build_record(
+                kind="document",
+                request_text=request_text,
+                message_text=ai_request.document_message(
+                    request_path.name, appeal_path.name),
+                appeal_path=str(appeal_path),
+                appeal_text=str(self.case.appeal_raw or ""),
+                source_path=str(request_path),
+                case_number=str(self.case.number),
+                stage_kind=stage_kind,
+                stage_index=stage_index,
+                doc_type=doc.get("doc_type"),
+                document_kind="gov",
+                node_kind=kind,
+                title=f"Сформировать · {title} · Обращение №{self.case.number}")
+            pending_send.save(self._documents_root(), record)
+        except Exception as exc:
+            diag.exception("ui.gov.form_document.pending")
+            QMessageBox.warning(self, "Ошибка",
+                                f"Не удалось отправить заявку: {exc}")
+            return
+        self.history.save(doc, draft=True)
+        self._refresh_history()
+        self.formed.emit(doc, self.chat_txt_path, self.png_paths)
+        # Никакой перезагрузки браузера: «Сформировать» работает в текущем
+        # диалоге (решение пользователя: страница ИИ не обновляется и не
+        # очищается ни после «Сформировать», ни после PNG).
+        self.send_in_chat.emit(record, str(self.chat_txt_path))
+        self._mark_request_sent(f"Сформировать · {title}")
 
     def _close_case_requested(self) -> None:
         """«Закрыть обращение» на этапе 3: дело отработано (v63).
@@ -904,6 +984,14 @@ class PostanovlenieProkuroraDialog(QDialog):
         self.stage1_basis = self._label("", "Caption")
         self.stage1_basis.setWordWrap(True)
         layout.addWidget(self.stage1_basis)
+        # v64: блок «РЕКОМЕНДАЦИИ» из ответа этапа 1 (промт 1.34, п.8.1.3) —
+        # подсказка прокурору: что сделать ДО первого постановления этапа 2.
+        # В постановление он не идёт и в контекст ИИ не возвращается.
+        self.stage1_reco = self._label("", "Caption")
+        self.stage1_reco.setWordWrap(True)
+        self.stage1_reco.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.stage1_reco)
         row = QHBoxLayout()
         row.setSpacing(8)
         stage1_save = QVBoxLayout()
@@ -913,8 +1001,9 @@ class PostanovlenieProkuroraDialog(QDialog):
         stage1_save.addWidget(self.stage1_save_caption)
         self.stage1_save = QPushButton("Сформировать")
         self.stage1_save.setToolTip(
-            "Напечатать постановление этапа 1 (принятие / отказ / "
-            "переадресация) в .png")
+            "Отправить ИИ заявку на ДОКУМЕНТ этапа 1 (принятие / отказ / "
+            "переадресация): в чат уходит .txt с решением этапа 1 и вводом "
+            "прокурора, по ответу ИИ печатается .png")
         self.stage1_save.clicked.connect(
             lambda _c=False: self._save_node_document("1"))
         stage1_save.addWidget(self.stage1_save)
@@ -988,7 +1077,9 @@ class PostanovlenieProkuroraDialog(QDialog):
         step_save.addWidget(self.step_save_caption)
         self.step_save = QPushButton("Сформировать")
         self.step_save.setToolTip(
-            "Напечатать постановление по выбранному подэтапу этапа 2 в .png")
+            "Отправить ИИ заявку на ДОКУМЕНТ выбранного подэтапа: в чат уходит "
+            ".txt с полем «Что стало известно» и ответами ИИ по этапам 1, 2.1… "
+            "текущему, по ответу печатается .png")
         self.step_save.clicked.connect(
             lambda _c=False: self._save_current_step())
         step_save.addWidget(self.step_save)
@@ -1013,7 +1104,8 @@ class PostanovlenieProkuroraDialog(QDialog):
         stage3_save.addWidget(self.stage3_save_caption)
         self.stage3_save = QPushButton("Сформировать")
         self.stage3_save.setToolTip(
-            "Напечатать итоговое постановление этапа 3 в .png")
+            "Отправить ИИ заявку на итоговый ДОКУМЕНТ этапа 3: в чат уходит "
+            ".txt со всей памятью дела, по ответу печатается .png")
         self.stage3_save.clicked.connect(
             lambda _c=False: self._save_node_document("3"))
         stage3_save.addWidget(self.stage3_save)
@@ -1066,6 +1158,8 @@ class PostanovlenieProkuroraDialog(QDialog):
             self.stage1_basis.setText(
                 ("Решение ИИ: " + ogp_stages.stage1_label(state) +
                  (" · " + basis if basis else "")) if state else "")
+        if hasattr(self, "stage1_reco"):
+            self.stage1_reco.setText(self._recommendations_text())
         if hasattr(self, "chain_hint"):
             self.chain_hint.setText(self._chain_hint_text(state))
         self._refresh_chain_picker()
@@ -1073,6 +1167,16 @@ class PostanovlenieProkuroraDialog(QDialog):
         self._refresh_save_indicators()
         if hasattr(self, "etap3_label"):
             self.etap3_label.setText(self._stage3_hint(state))
+
+    def _recommendations_text(self) -> str:
+        """Рекомендации ИИ прокурору из ответа этапа 1 (v64)."""
+        rows = [str(row.get("text", "") or "").strip()
+                for row in (getattr(self.case, "recommendations", None) or [])]
+        rows = [row for row in rows if row]
+        if not rows:
+            return ""
+        return ("Рекомендации ИИ прокурору:\n" +
+                "\n".join(f"{i}. {row}" for i, row in enumerate(rows, 1)))
 
     def _chain_hint_text(self, state: str) -> str:
         case = self.case
@@ -1193,9 +1297,15 @@ class PostanovlenieProkuroraDialog(QDialog):
     def _set_save_state(self, button, indicator, state: dict, caption: str) -> None:
         if button is None:
             return
-        button.setEnabled(bool(state.get("can_save")))
+        # v64: «Сформировать» — это ЗАЯВКА НА ДОКУМЕНТ в чат, поэтому кнопка
+        # доступна, когда узел в принципе можно выносить (`can_run`: порядок
+        # подэтапов, наличие плана). Ответ ИИ по узлу больше не обязателен:
+        # в заявку войдёт то, что уже есть, а документ придёт в ответе.
+        button.setEnabled(bool(state.get("can_run") or state.get("can_save")))
         button.setToolTip(
-            f"{caption}: " + (state.get("hint", "") or "постановление по ответу ИИ"))
+            f"{caption}: " + (state.get("hint", "") or
+                              "заявка на документ уходит в чат ИИ, "
+                              ".png печатается по ответу"))
         if indicator is not None:
             if state.get("png"):
                 indicator.setText("PNG сформирован")
@@ -2309,9 +2419,18 @@ class PostanovlenieProkuroraDialog(QDialog):
 
     # ---------------------------------------------------------------- сборка
 
-    def _collect(self) -> gdata.PostanovlenieProkurora:
-        """Документ текущего этапа. Обстоятельства — из четырёх частей дела."""
+    def _collect(self, kind: str = "") -> gdata.PostanovlenieProkurora:
+        """Документ этапа. Обстоятельства — из четырёх частей дела.
+
+        v64: `kind` — узел, для которого собирается документ («1», «2.1», «3»).
+        Без него этап берётся из АКТИВНОГО узла, и в выгрузке
+        `этап-1 — принятие.7z` документ этапа 1 получил `case_stage_kind:
+        measure` и `doc_stage: final`: после автоперехода активным был уже
+        подэтап 2.1, а печатали этап 1.
+        """
         self._collect_case()
+        stage_kind = cases.stage_kind_for_node(kind) if str(kind or "").strip() \
+            else self._stage_kind()
         doc = gdata.PostanovlenieProkurora.from_dict(self.document.to_dict())
         for key, widget in self.fields.items():
             if key in ("case_number", "appeal_number"):
@@ -2320,7 +2439,7 @@ class PostanovlenieProkuroraDialog(QDialog):
                 doc.set(key, widget.text().strip())
         # v62.3: комбобоксов этапа и вида решения в форме нет — этап берётся
         # из активного узла цепочки, вид решения — из ответа ИИ (документа).
-        doc.doc_stage = cases.gov_stage_for_kind(self._stage_kind())
+        doc.doc_stage = cases.gov_stage_for_kind(stage_kind)
         doc.doc_type = (str(doc.get("doc_type") or "").strip()
                         or gdata.auto_type_for(doc.doc_stage))
         doc.city = doc.city or gdata.GOV_CITY or "г. Лос-Сантос"
@@ -2340,14 +2459,14 @@ class PostanovlenieProkuroraDialog(QDialog):
         # ИИ. В «УСТАНОВИЛ» печатается исключительно ответ ИИ (`established`);
         # `situation`/`prosecutor_facts` заполняются из ответа ИИ уже после его
         # получения (см. `apply_answer_texts`), а не из блоков формы.
-        if not cases.stage_meta(self._stage_kind())["needs_facts"]:
+        if not cases.stage_meta(stage_kind)["needs_facts"]:
             doc.prosecutor_facts = ""
         doc.set("situation", "")
         # Дело: прокурор видит, к какому обращению относится документ, а имя
         # файла получает этап — PNG прошлых этапов не заменяются (v42).
         doc.appeal_raw = self.case.appeal_raw
         doc.case_number = str(self.case.number or "")
-        doc.case_stage_kind = self._stage_kind()
+        doc.case_stage_kind = stage_kind
         if self.case.intake_basis:
             doc.preamble_basis = doc.get("preamble_basis")
         # v49: реквизиты постановления — из ключевых слов ответа ИИ, а не из

@@ -250,7 +250,7 @@ class VersionTests(unittest.TestCase):
 
     def test_version_is_bumped(self):
         """v58 вышла как 2.14.0; в папке v59 номер уже 2.15.0."""
-        self.assertRegex(_src("config.py"), r'CURRENT_VERSION = "2\.1[5-9]\.\d+"')
+        self.assertRegex(_src("config.py"), r'CURRENT_VERSION = "2\.(1[5-9]|2\d)\.\d+"')
 
     def test_release_revision(self):
         self.assertRegex(_src("diagnostics.py"),
