@@ -6782,7 +6782,12 @@ class MainWindow(QMainWindow):
             diag.event("documents.gov_assets", **self._doc_gov_assets_cache.describe())
         return self._doc_gov_assets_cache
 
-    @pyqtSlot(object, str, object)
+    # v62.4: сигнатура слота обязана совпадать с сигналом
+    # `print_node_document = pyqtSignal(object, object, str)`. Здесь стояло
+    # `@pyqtSlot(object, str, object)`, и PyQt падал с TypeError прямо на
+    # `connect()` — «Новое обращение» вообще не открывалось (лог
+    # 20261125-202752-17212-a6ba4d, main.py:5912).
+    @pyqtSlot(object, object, str)
     def _print_gov_node(self, node_kind, doc, raw_text):
         """«Сформировать» у узла цепочки: постановление → .png (v62).
 

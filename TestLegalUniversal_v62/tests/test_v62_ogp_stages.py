@@ -494,6 +494,85 @@ class ImportGuardTests(unittest.TestCase):
         else:
             self.fail("new_case не найден")
 
+    @staticmethod
+    def _type_names(args):
+        """Имена типов в декораторе/объявлении сигнала: (object, str, …)."""
+        names = []
+        for arg in args:
+            names.append(getattr(arg, "id", getattr(arg, "attr", "?")))
+        return tuple(names)
+
+    def test_slot_signature_matches_signal(self):
+        """v62.4: `connect()` падал с TypeError на несовпадении сигнатуры.
+
+        Лог `20261125-202752-17212-a6ba4d`: «Новое обращение» → `TypeError` в
+        `_open_postanovlenie_prokurora`, без единого кадра внутри формы. Значит
+        упало само подключение сигнала: сигнал объявлен как
+        `pyqtSignal(object, object, str)`, а слот в `main.py` — как
+        `@pyqtSlot(object, str, object)`. Важно, что совпадать обязаны не
+        только число аргументов, но и типы: у обоих вариантов их по три.
+        """
+        ui = ast.parse(_src("postanovlenie_prokuror_ui.py"))
+        signals = {}
+        for node in ast.walk(ui):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+                func = node.value.func
+                name = getattr(func, "id", getattr(func, "attr", ""))
+                if name == "pyqtSignal":
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            signals[target.id] = self._type_names(node.value.args)
+        self.assertIn("print_node_document", signals)
+
+        main_tree = ast.parse(_src("main.py"))
+        slots = {}
+        for node in ast.walk(main_tree):
+            if isinstance(node, ast.FunctionDef):
+                for deco in node.decorator_list:
+                    if isinstance(deco, ast.Call) and getattr(
+                            deco.func, "id", "") == "pyqtSlot":
+                        slots[node.name] = self._type_names(deco.args)
+        checked = 0
+        for node in ast.walk(main_tree):
+            # dlg.<signal>.connect(self.<slot>)
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "connect" and node.args):
+                continue
+            attr = node.func.value
+            if not (isinstance(attr, ast.Attribute)
+                    and isinstance(attr.value, ast.Name)
+                    and attr.value.id == "dlg"):
+                continue
+            target = node.args[0]
+            if not (isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"):
+                continue
+            signal, slot = attr.attr, target.attr
+            if signal not in signals or slot not in slots:
+                continue        # слот без декоратора: PyQt принимает любой callable
+            checked += 1
+            self.assertEqual(
+                signals[signal], slots[slot],
+                f"{signal} (сигнал) ↔ {slot} (слот): сигнатуры расходятся")
+        self.assertGreater(checked, 0, "не нашлось ни одной пары сигнал→слот")
+
+    def test_print_node_slot_takes_document_object(self):
+        """Второй аргумент `_print_gov_node` — документ, а не текст (v62.4)."""
+        main_tree = ast.parse(_src("main.py"))
+        for node in ast.walk(main_tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_print_gov_node":
+                deco = [d for d in node.decorator_list
+                        if isinstance(d, ast.Call)
+                        and getattr(d.func, "id", "") == "pyqtSlot"]
+                self.assertTrue(deco, "_print_gov_node без @pyqtSlot")
+                self.assertEqual(self._type_names(deco[0].args),
+                                 ("object", "object", "str"))
+                break
+        else:
+            self.fail("_print_gov_node не найден")
+
     def test_qt_widgets_used_by_form_are_imported(self):
         """Каждый Q-класс из формы присутствует в импорте QtWidgets."""
         ui = _src("postanovlenie_prokuror_ui.py")
