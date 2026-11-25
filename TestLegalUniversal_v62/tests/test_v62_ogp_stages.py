@@ -432,6 +432,68 @@ class ImportGuardTests(unittest.TestCase):
         # форма разбирает ответ ИИ через gdata (в v62 был вызов несуществующего pgov)
         self.assertNotIn("pgov.", ui)
 
+    #: Атрибуты, которые форма наследует от QDialog: их не присваивают в коде.
+    INHERITED = ("accept", "reject", "move", "resize", "width", "height",
+                 "screen", "childAt", "frameGeometry", "geometry", "size",
+                 "setMinimumSize", "setModal", "setStyleSheet", "update",
+                 "setWindowFlags", "setWindowTitle", "setWindowIcon", "show",
+                 "hide", "close", "setFocus", "setWindowOpacity", "raise",
+                 "activateWindow")
+
+    def test_no_references_to_missing_widgets(self):
+        """v62.3: `self.cb_type` и `self.cb_stage` роняли «Новое обращение».
+
+        Вкладка «Постановление» удалена в v62, комбобоксы этапа и вида
+        решения форма больше не создаёт, а код на них ссылался — `py_compile`
+        и проверка импортов такого не видят, потому что имя синтаксически
+        корректно и падает только при вызове (лог
+        `20261125-194436-20848-ebcda6`: `AttributeError` в `new_case` →
+        `_fill_types`).
+
+        Тест собирает все атрибуты `self.*`, которые форма где-либо создаёт
+        или объявляет методом, и требует, чтобы читались только они.
+        """
+        tree = ast.parse(_src("postanovlenie_prokuror_ui.py"))
+        known = set(self.INHERITED)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                known.add(node.name)
+            elif (isinstance(node, ast.Attribute)
+                  and isinstance(node.ctx, ast.Store)
+                  and isinstance(node.value, ast.Name)
+                  and node.value.id == "self"):
+                known.add(node.attr)
+        # сигналы формы объявлены как атрибуты класса
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        known.add(target.id)
+        missing = {}
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Attribute)
+                    and isinstance(node.ctx, ast.Load)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id == "self"
+                    and node.attr not in known):
+                missing.setdefault(node.attr, []).append(node.lineno)
+        self.assertEqual(missing, {}, f"self.* не создаётся нигде: {missing}")
+
+    def test_new_case_does_not_touch_removed_combos(self):
+        """`new_case` не должен обращаться к удалённым комбобоксам."""
+        tree = ast.parse(_src("postanovlenie_prokuror_ui.py"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "new_case":
+                attrs = {n.attr for n in ast.walk(node)
+                         if isinstance(n, ast.Attribute)
+                         and isinstance(n.value, ast.Name)
+                         and n.value.id == "self"}
+                self.assertNotIn("cb_type", attrs)
+                self.assertNotIn("cb_stage", attrs)
+                break
+        else:
+            self.fail("new_case не найден")
+
     def test_qt_widgets_used_by_form_are_imported(self):
         """Каждый Q-класс из формы присутствует в импорте QtWidgets."""
         ui = _src("postanovlenie_prokuror_ui.py")

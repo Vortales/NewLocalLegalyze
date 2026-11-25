@@ -2252,20 +2252,30 @@ class V39DocTypeTwoPartsTests(unittest.TestCase):
 
     # ── форма ───────────────────────────────────────────────────────────
     def test_form_has_stage_selector_and_dependent_list(self):
+        """v62.3: комбобоксов этапа нет — этап берётся из узла цепочки."""
         src = Path("postanovlenie_prokuror_ui.py").read_text(encoding="utf-8")
-        self.assertIn("self.cb_stage", src)
-        self.assertIn("_on_stage_changed", src)
-        self.assertIn("GOV_STAGE_TITLES", src)
-        # v41: в форме два разных значения «определит ИИ» — через
-        # `auto_type_for()`/`type_choices()`, а не одно общее.
+        self.assertNotIn("self.cb_stage", src)
+        self.assertNotIn("self.cb_type", src)
+        self.assertIn("_on_stage_changed", src)      # совместимость вызовов
+        self.assertIn("stage_kind_for_node", src)
+        self.assertIn("gov_stage_for_kind", src)   # этап документа по узлу
         self.assertIn("auto_type_for", src)
 
     def test_form_fills_types_by_stage(self):
+        """v62.3: список видов решений живёт в данных, а не в форме.
+
+        Комбобокса «Вид решения» в форме больше нет (вкладка «Постановление»
+        удалена в v62), поэтому проверяем сам справочник: у каждого этапа свой
+        набор, и «Определит ИИ…» всегда стоит первым.
+        """
+        for stage in (gdata.GOV_STAGE_PRIMARY, gdata.GOV_STAGE_FINAL):
+            choices = gdata.type_choices(stage)
+            self.assertEqual(choices[0], gdata.DEFAULT_DOC_TYPE)
+            self.assertIn(gdata.auto_type_for(stage), choices)
         src = Path("postanovlenie_prokuror_ui.py").read_text(encoding="utf-8")
         block = src[src.index("def _fill_types"):]
         block = block[:block.index("def _on_stage_changed")]
-        self.assertIn("type_choices(stage)", block)
-        self.assertNotIn("GOV_DOC_TYPE_AUTO", block)   # v41: только по этапу
+        self.assertNotIn("self.cb_type", block)
 
     def test_suggestion_prefers_criminal_over_court(self):
         doc = gdata.PostanovlenieProkurora(
@@ -2346,10 +2356,6 @@ class V391AutoForPrimaryStageTests(unittest.TestCase):
 
     def test_auto_is_offered_on_both_stages(self):
         """v43: «определит ИИ» есть на обоих этапах; по умолчанию — по обращению."""
-        src = Path("postanovlenie_prokuror_ui.py").read_text(encoding="utf-8")
-        block = src[src.index("def _fill_types"):]
-        block = block[:block.index("def _on_stage_changed")]
-        self.assertIn("gdata.type_choices(stage)", block)
         for stage in (gdata.GOV_STAGE_PRIMARY, gdata.GOV_STAGE_FINAL):
             choices = gdata.type_choices(stage)
             self.assertEqual(choices[0], gdata.DEFAULT_DOC_TYPE)
@@ -2404,8 +2410,9 @@ class V391LayoutTests(unittest.TestCase):
         self.assertIn("Этап 3. Итог по обращению", self.src)
 
     def test_type_combo_does_not_clip_long_value(self):
-        self.assertIn("setMinimumContentsLength", self.src)
-        self.assertIn("cb_type.setToolTip(text)", self.src)
+        """v62.3: комбобокса вида решения нет — длинные значения не обрезаются."""
+        self.assertNotIn("cb_type.setToolTip(text)", self.src)
+        self.assertNotIn("setMinimumContentsLength", self.src)
 
     def test_only_one_hint_label_under_lists(self):
         """v42/v62: лишних подсказок нет — один короткий статус узла."""
@@ -2764,11 +2771,13 @@ class V41TwoStageAutoTests(unittest.TestCase):
         self.assertNotIn("Определит ИИ", doc.title())
 
     def test_form_uses_stage_choices(self):
+        """v62.3: наборы видов решений берутся из `type_choices(stage)`."""
         src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
-        block = src[src.index("def _fill_types"):]
-        block = block[:block.index("def _on_stage_changed")]
-        self.assertIn("type_choices(stage)", block)
         self.assertIn("auto_type_for", src)
+        primary = gdata.type_choices(gdata.GOV_STAGE_PRIMARY)
+        final = gdata.type_choices(gdata.GOV_STAGE_FINAL)
+        self.assertNotEqual(primary, final)          # наборы разные по этапам
+        self.assertIn(gdata.auto_type_for(gdata.GOV_STAGE_FINAL), final)
 
     def test_stage_note_explains_evidence_of_the_stage(self):
         """v42: подсказка этапа живёт в данных дела (`gov_case.STAGE_META`)."""
@@ -3005,15 +3014,16 @@ class V42CaseTests(unittest.TestCase):
         self.assertNotIn("Санкция не назначается.", src)
 
     def test_default_type_is_ai_choice(self):
-        """v43: по умолчанию в «Вид решения» — «Определит ИИ по обращению»."""
+        """v43/v62.3: по умолчанию вид решения — «Определит ИИ по обращению»."""
         src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
-        block = src[src.index("def _fill_types"):]
-        block = block[:block.index("def _on_stage_changed")]
-        self.assertIn("DEFAULT_DOC_TYPE", block)
-        self.assertIn("setCurrentIndex", block)
-        self.assertIn("is_auto_type", block)
+        block = src[src.index("def _collect"):]
+        block = block[:block.index("def set_document")]
+        # вид решения не выбирается в форме: он приходит из ответа ИИ,
+        # а если его нет — подставляется значение этапа
+        self.assertIn("auto_type_for", block)
         self.assertEqual(gdata.type_choices(gdata.GOV_STAGE_PRIMARY)[0],
                          "Определит ИИ по обращению")
+        self.assertTrue(gdata.is_auto_type(gdata.DEFAULT_DOC_TYPE))
 
 
 class V42PreambleTests(unittest.TestCase):
@@ -3167,10 +3177,11 @@ class V43DefaultDocTypeTests(unittest.TestCase):
         self.assertNotIn("О привлечении к административной ответственности", primary)
 
     def test_form_defaults_to_the_constant(self):
+        """v62.3: константа по умолчанию остаётся в данных и в справочнике."""
+        self.assertEqual(gdata.type_choices(gdata.GOV_STAGE_PRIMARY)[0],
+                         gdata.DEFAULT_DOC_TYPE)
         src = (_P("postanovlenie_prokuror_ui.py")).read_text(encoding="utf-8")
-        block = src[src.index("def _fill_types"):]
-        block = block[:block.index("def _on_stage_changed")]
-        self.assertIn("gdata.DEFAULT_DOC_TYPE", block)
+        self.assertNotIn("self.cb_type", src)
 
 
 class V43StageStabilityTests(unittest.TestCase):

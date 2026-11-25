@@ -1499,72 +1499,50 @@ class PostanovlenieProkuroraDialog(QDialog):
     # -------------------------------------------------- этап и вид решения (v39–v42)
 
     def _fill_types(self, stage: str) -> None:
-        """Список видов решений: первым — «Определит ИИ по обращению» (v43).
+        """v62.3: список «Вид решения» из формы убран вместе с вкладкой.
 
-        Замечание: «В Постановление → Вид решения → всегда был по умолчанию
-        "Определит ИИ по обращению"». Поэтому первый пункт списка — всегда это
-        значение (`gdata.DEFAULT_DOC_TYPE`), независимо от этапа; конкретные
-        виды и «по обстоятельствам» остаются дополнительными пунктами.
+        Замечание пользователя: «„Цепочка этапов“ должна исполнять функционал
+        „Постановление“». Вкладок «Постановление» и «Обстоятельства» в v62 нет,
+        комбобоксов этапа и вида решения форма больше не создаёт, а этот метод
+        остался от v43 и обращался к удалённому комбобоксу — из-за этого
+        падало «Новое обращение» (лог 20261125-194436-20848-ebcda6:
+        `AttributeError` в `new_case` → `_fill_types`). Метод сохранён как
+        точка совместимости: список видов решений теперь показывает заявку
+        ИИ, а вид решения берётся из ответа по узлу цепочки.
         """
-        self.cb_type.blockSignals(True)
-        current = self.cb_type.currentText().strip()
-        self.cb_type.clear()
-        types = gdata.type_choices(stage)
-        self.cb_type.addItems(types)
-        if current in types and gdata.is_auto_type(current):
-            self.cb_type.setCurrentText(current)
-        else:
-            index = types.index(gdata.DEFAULT_DOC_TYPE) if \
-                gdata.DEFAULT_DOC_TYPE in types else 0
-            self.cb_type.setCurrentIndex(index)
-        self.cb_type.blockSignals(False)
+        return
 
     def _on_stage_changed(self) -> None:
-        """Смена этапа документа (вкладка «Постановление», v49).
+        """v62.3: этап документа берётся из узла цепочки, а не из комбобокса.
 
-        Здесь же подтягивается «Цепочка»: этап документа и вид этапа дела —
-        одно и то же решение, показанное двумя подписями, поэтому они не
-        должны расходиться. Цепочка обновляется молча (без сигналов), чтобы
-        не было взаимных вызовов.
+        Комбобокса «Этап» в форме больше нет (вкладка «Постановление» удалена
+        в v62), поэтому смена этапа — это выбор узла в «Цепочке этапов».
+        Метод оставлен, чтобы старые вызовы (в том числе из `main.py` и
+        подокна обстоятельств) не падали с `AttributeError`.
         """
-        if not hasattr(self, "cb_stage"):
-            return
-        stage = self.cb_stage.currentData() or gdata.GOV_STAGE_PRIMARY
-        self._fill_types(stage)
-        self._set_field("doc_stage", stage)
-        self.cb_stage.setToolTip(gdata.GOV_STAGE_TITLES[stage])
-        self._on_type_changed(self.cb_type.currentText())
-        # v62: вкладки «Постановление» с двумя этапами больше нет — этап
-        # берётся из узла цепочки, поэтому список этапов не синхронизируем.
         self._on_stage_kind_changed()
 
     def _on_type_changed(self, text: str) -> None:
-        text = (text or "").strip()
-        stage_now = (self.cb_stage.currentData() if hasattr(self, "cb_stage") else
-                     gdata.GOV_STAGE_PRIMARY) or gdata.GOV_STAGE_PRIMARY
-        self._set_field("doc_type", text or gdata.auto_type_for(stage_now))
-        if hasattr(self, "cb_type"):
-            self.cb_type.setToolTip(text)
-            self.cb_type.setMinimumContentsLength(min(30, max(16, len(text))))
+        """v62.3: «Вид решения» больше не выбирается вручную.
 
-    def _toggle_extra(self) -> None:
-        visible = bool(self.extra_toggle.isChecked())
-        if hasattr(self, "extra_panel"):
-            self.extra_panel.setVisible(visible)
+        Значение приходит из ответа ИИ по узлу (`ogp_stages.node_state`), форма
+        хранит его в `self.document`. Ничего не делаем, если вид решения
+        пришёл непустым: он уже записан в документ при разборе ответа.
+        """
+        text = (text or "").strip()
+        if text:
+            self._set_field("doc_type", text)
 
     # ------------------------------------------------------ дело: состояние, этапы
 
     def _stage_kind(self) -> str:
-        """Этап документа — единый источник: вкладка «Постановление» (v43, v49).
+        """Вид этапа дела по активному узлу цепочки (v62.3).
 
-        v49 (замечание пользователя): «поля „Этап: Этап 1 …“ в „Обстоятельствах“
-        дублируют вкладку „Постановление“ — свести к единому функционалу,
-        эталон — „Постановление“». Поэтому этап берётся из комбобокса этапа
-        документа, а второй список этапов из формы убран совсем.
+        Раньше этап брался из комбобокса «Этап» вкладки «Постановление»
+        (v43, v49). В v62 этой вкладки нет — этап определяется узлом:
+        «1» — первичное решение, «2.N» — санкция по существу, «3» — итог.
         """
-        if hasattr(self, "cb_stage") and self.cb_stage.currentData():
-            return cases.stage_kind_for_gov_stage(self.cb_stage.currentData())
-        return self.case.open_stage_kind() or cases.STAGE_INTAKE
+        return cases.stage_kind_for_node(self._active_node_kind())
 
     def _stage_index(self) -> int:
         """Номер этапа для файлов — постоянный для вида этапа (v43).
@@ -1575,45 +1553,32 @@ class PostanovlenieProkuroraDialog(QDialog):
         return self.case.stage_number(self._stage_kind())
 
     def _select_stage(self, kind: str, keep_user_choice: bool = False) -> None:
-        """Ставит этап в единственном месте — вкладке «Постановление» (v43, v49).
+        """v62.3: выбор этапа = выбор узла цепочки, комбобокса в форме нет.
 
-        Второго списка этапов в форме больше нет (v49), поэтому выбор этапа
-        сводится к переключению «Этап» и подходящего «Вида решения».
+        Оставлено для совместимости со старыми вызовами (`new_case`,
+        `open_case`, `main.py`): запоминаем вид этапа в деле и перерисовываем
+        «Цепочку этапов».
         """
-        if not hasattr(self, "cb_stage"):
-            return
         current = self._stage_kind()
         if keep_user_choice and current and current != kind:
             return
-        # v62: узлы «1», «2.N» и «3» ставятся как вид этапа документа.
-        stage = cases.gov_stage_for_kind(kind)
-        index = self.cb_stage.findData(stage)
-        if index >= 0 and index != self.cb_stage.currentIndex():
-            self.cb_stage.setCurrentIndex(index)     # вызовет _on_stage_changed
-        self._refresh_stage_hint()
+        self.case.set_stage_kind(kind)
+        self._refresh_chain_view()
 
     def _refresh_stage_hint(self) -> None:
         """v62: подсказка этапа убрана — длинных пояснений в форме нет."""
         return
 
     def _on_stage_kind_changed(self) -> None:
-        """Этап документа сменился: запоминаем его в деле (v43, v49).
+        """Этап сменился: запоминаем его в деле и обновляем вид (v62.3).
 
-        Вызывается из `_on_stage_changed` (комбобокс «Этап» на вкладке
-        «Постановление») — второго места выбора этапа в форме больше нет, так
-        что этап не может «разъехаться» между вкладками.
+        Раньше здесь подстраивался комбобокс «Этап» вкладки «Постановление».
+        Вкладки больше нет, поэтому этап хранится в деле (`stage_kind`), а
+        единственное место выбора этапа — узлы «Цепочки этапов».
         """
         kind = self._stage_kind()
-        # v43: выбранный этап запоминаем в деле — при следующем открытии
-        # форма покажет его же, а не «следующий по цепочке».
         self.case.set_stage_kind(kind)
         self.cases.save(self.case)
-        # v49: этап документа подстраивается под вид этапа цепочки (иначе
-        # документ доп. проверки печатался как первичное решение).
-        stage = cases.gov_stage_for_kind(kind)
-        index = self.cb_stage.findData(stage)
-        if index >= 0 and index != self.cb_stage.currentIndex():
-            self.cb_stage.setCurrentIndex(index)     # вызовет _on_stage_changed
         self._refresh_stage_hint()
         self._refresh_case_view()
 
@@ -1996,11 +1961,9 @@ class PostanovlenieProkuroraDialog(QDialog):
             self.cases.save(self.case)
         except Exception:
             diag.exception("ui.gov.clear_facts")
-        if hasattr(self, "work_hint"):
-            self.work_hint.setText(
-                "Обстоятельства очищены: опишите, что видно на видеофиксации, "
-                "доводы за и против, предложите наказание и изложите своё "
-                "решение — этот текст уйдёт ИИ.")
+        # v62.3: подсказки-абзацы из формы убраны, `work_hint` больше нет
+        # (поле проверялось через `hasattr`, поэтому вреда не было, но и
+        # смысла держать мёртвую ссылку нет).
         diag.event("gov.facts.cleared")
         self._refresh_case_view()
 
@@ -2026,8 +1989,6 @@ class PostanovlenieProkuroraDialog(QDialog):
                     value = self.document.get(key)
                     if widget is not None and value:
                         widget.setText(value)
-                if hasattr(self, "cb_type") and self.document.get("doc_type"):
-                    self.cb_type.setCurrentText(self.document.get("doc_type"))
                 legal = self.texts.get("legal_basis")
                 if legal is not None and self.document.get("legal_basis"):
                     legal.blockSignals(True)
@@ -2237,9 +2198,11 @@ class PostanovlenieProkuroraDialog(QDialog):
                 continue
             if widget is not None and hasattr(widget, "text"):
                 doc.set(key, widget.text().strip())
-        doc.doc_stage = (self.cb_stage.currentData()
-                         if hasattr(self, "cb_stage") else "") or gdata.GOV_STAGE_PRIMARY
-        doc.doc_type = self.cb_type.currentText().strip() or doc.doc_type
+        # v62.3: комбобоксов этапа и вида решения в форме нет — этап берётся
+        # из активного узла цепочки, вид решения — из ответа ИИ (документа).
+        doc.doc_stage = cases.gov_stage_for_kind(self._stage_kind())
+        doc.doc_type = (str(doc.get("doc_type") or "").strip()
+                        or gdata.auto_type_for(doc.doc_stage))
         doc.city = doc.city or gdata.GOV_CITY or "г. Лос-Сантос"
         for key, widget in self.texts.items():
             if key == "appeal_raw" or key in (
@@ -2281,17 +2244,11 @@ class PostanovlenieProkuroraDialog(QDialog):
         for key, widget in self.fields.items():
             if widget is not None and hasattr(widget, "setText"):
                 widget.setText(doc.get(key))
-        if hasattr(self, "cb_type"):
-            stage = doc.stage() if hasattr(doc, "stage") else gdata.GOV_STAGE_PRIMARY
-            if hasattr(self, "cb_stage"):
-                self.cb_stage.blockSignals(True)
-                self.cb_stage.setCurrentIndex(
-                    0 if stage == gdata.GOV_STAGE_PRIMARY else 1)
-                self.cb_stage.blockSignals(False)
-                self._fill_types(stage)
-            doc_type = doc.get("doc_type") or gdata.auto_type_for(stage)
-            self.cb_type.setCurrentText(doc_type)
-            self._on_type_changed(doc_type)
+        # v62.3: этап и вид решения больше не выставляются в комбобоксах —
+        # их нет в форме. Вид решения из загруженного документа сохраняем в
+        # самом документе, а этап определяет узел цепочки.
+        stage = doc.stage() if hasattr(doc, "stage") else gdata.GOV_STAGE_PRIMARY
+        self._on_type_changed(doc.get("doc_type") or gdata.auto_type_for(stage))
         for key, widget in self.texts.items():
             if key in ("appeal_raw", "facts_video", "facts_for", "facts_against",
                        "proposal", "own_decision"):

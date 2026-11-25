@@ -259,10 +259,17 @@ class V49SingleStagePlaceTests(unittest.TestCase):
             self.assertIn(marker, chain)
 
     def test_stage_kind_comes_from_document_tab(self):
+        """v49 → v62.3: этап берётся из узла цепочки, а не из комбобокса.
+
+        Вкладки «Постановление» с комбобоксом «Этап» в v62 нет, поэтому
+        `_stage_kind` обязан опираться на активный узел цепочки.
+        """
         block = _block(self.ui, "def _stage_kind", "def _stage_index")
         self.assertNotIn("cb_stage_kind", block)
         self.assertNotIn("cb_chain_stage", block)
-        self.assertIn("cb_stage", block)
+        self.assertNotIn("cb_stage", block)
+        self.assertIn("stage_kind_for_node", block)
+        self.assertIn("_active_node_kind", block)
 
     def test_mapping_between_stage_and_kind_is_explicit(self):
         import gov_case as c

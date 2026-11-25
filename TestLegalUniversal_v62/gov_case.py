@@ -1732,6 +1732,28 @@ def gov_stage_for_kind(kind: str) -> str:
     return KIND_TO_GOV_STAGE.get(str(kind or ""), gdata.GOV_STAGE_PRIMARY)
 
 
+def stage_kind_for_node(node: str) -> str:
+    """Вид этапа дела по узлу цепочки: «1» / «2.N» / «3» (v62.3).
+
+    В v62 вкладки «Постановление» с комбобоксом этапа нет — этап берётся из
+    узла, который прокурор ведёт в «Цепочке этапов». Узел этапа 1 — первичное
+    решение по обращению, любой подэтап 2.N — санкция по существу, узел 3 —
+    итог по обращению.
+    """
+    key = str(node or "").strip()
+    if key.startswith("эт."):
+        key = key[3:]
+    if not key:
+        return STAGE_INTAKE
+    if key == "1":
+        return STAGE_INTAKE
+    if key == "3":
+        return STAGE_CLOSE
+    if key.startswith("2"):
+        return STAGE_MEASURE
+    return STAGE_INTAKE
+
+
 def primary_stage_kind(case: "GovCase") -> str:
     """Этап для печати документа об отказе: всегда этап первичного решения."""
     if case is not None and case.refused() and not case.accepted():
