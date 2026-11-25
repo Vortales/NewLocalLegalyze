@@ -1,0 +1,230 @@
+2026-11-25T13:42:15.970849+00:00 [MainThread] thread="MainThread" event="session.start" platform="Windows-10-10.0.19045-SP0" python="3.12.6 (tags/v3.12.6:a4a2d2b, Sep  6 2024, 20:11:23) [MSC v.1940 64 bit (AMD64)]" bitness=64 executable="D:\\Users\\79528\\PycharmProjects\\PythonProject1\\.venv\\Scripts\\python.exe" cwd="D:\\Users\\79528\\PycharmProjects\\PythonProject1\\Legalyze\\test2\\TestLegalUniversal_v62" frozen=false nuitka_compiled=false release_revision="universal-embedded-v62" packages={"PyQt6": "6.12.0", "PyQt6-Qt6": "6.12.0", "requests": "2.34.2", "websocket-client": "1.9.2", "cryptography": "50.0.2", … windows_build="sys.getwindowsversion(major=10, minor=0, build=19045, platform=2, service_pack='')" modes={"LEGALYZE_DISABLE_GPU": null, "LEGALYZE_EXTERNAL_BROWSER": null, "LEGALYZE_FRESH_PROFILE": null, "LEGALYZE_LOG_OFF": nu…
+2026-11-25T13:42:15.971847+00:00 [SystemInventory] thread="SystemInventory" event="windows.privilege" elevated=false remote_session=false proxy_variables_present=[]
+2026-11-25T13:42:21.677094+00:00 [SystemInventory] thread="SystemInventory" event="windows.inventory" data="{\r\n    \"GPU\":  [\r\n                {\r\n                    \"Name\":  \"Intel(R) UHD Graphics\",\r\n             …
+2026-11-25T13:42:22.290109+00:00 [MainThread] thread="MainThread" event="bt.trace.installed" dir="C:\\Users\\G5KC\\AppData\\Roaming\\Legalyze\\logs\\20261125-164215-20408-bd3bec" version="browser-trace-1" python="3.12.6" platform="win32"
+2026-11-25T13:42:22.357980+00:00 [MainThread] thread="MainThread" event="stage.begin" name="main"
+2026-11-25T13:42:22.391792+00:00 [MainThread] thread="MainThread" event="storage.paths" app_dir="C:\\Users\\G5KC\\AppData\\Roaming\\Legalyze" data_dir="C:\\Users\\G5KC\\AppData\\Roaming\\Legalyze\\data" profile="C:\\Users\\G5KC\\AppData\\Roaming\\Legalyze\\qtwebengine-profile" logs="C:\\Users\\G5KC\\AppData\\Roaming\\Legalyze\\logs\\20261125-164215-20408-bd3bec"
+2026-11-25T13:42:22.391792+00:00 [MainThread] thread="MainThread" event="stage.begin" name="load_config"
+2026-11-25T13:42:22.391792+00:00 [MainThread] thread="MainThread" event="stage.begin" name="ensure_dirs"
+2026-11-25T13:42:22.392790+00:00 [MainThread] thread="MainThread" event="stage.end" name="ensure_dirs" seconds=0.0
+2026-11-25T13:42:22.393787+00:00 [MainThread] thread="MainThread" event="stage.end" name="load_config" seconds=0.0
+2026-11-25T13:42:22.393787+00:00 [MainThread] thread="MainThread" event="stage.begin" name="ensure_dirs"
+2026-11-25T13:42:22.394300+00:00 [MainThread] thread="MainThread" event="stage.end" name="ensure_dirs" seconds=0.0
+2026-11-25T13:42:22.516845+00:00 [MainThread] thread="MainThread" event="qt.start" qt="6.12.0" pyqt="6.12.0" platform="windows" style="windowsvista"
+2026-11-25T13:42:22.518840+00:00 [MainThread] thread="MainThread" event="qt.screen_count" screens=1 primary="HDMI"
+2026-11-25T13:42:22.518840+00:00 [MainThread] thread="MainThread" event="qt.screen" geometry=[0, 0, 2560, 1440] available=[0, 0, 2560, 1400] dpi=96.0 dpr=1.0
+2026-11-25T13:42:22.568707+00:00 [MainThread] thread="MainThread" event="startup.ready" template_filled=true prompt_selected=true
+2026-11-25T13:42:22.570701+00:00 [MainThread] thread="MainThread" event="stage.begin" name="MainWindow.__init__"
+2026-11-25T13:42:22.608600+00:00 [MainThread] thread="MainThread" event="stage.begin" name="HotkeyChip.__init__"
+2026-11-25T13:42:22.614584+00:00 [MainThread] thread="MainThread" event="stage.end" name="HotkeyChip.__init__" seconds=0.0
+2026-11-25T13:42:22.616579+00:00 [MainThread] thread="MainThread" event="stage.begin" name="HotkeyChip.__init__"
+2026-11-25T13:42:22.617577+00:00 [MainThread] thread="MainThread" event="stage.end" name="HotkeyChip.__init__" seconds=0.0
+2026-11-25T13:42:22.621565+00:00 [MainThread] thread="MainThread" event="stage.begin" name="LoadingOverlay.__init__"
+2026-11-25T13:42:22.622563+00:00 [MainThread] thread="MainThread" event="stage.end" name="LoadingOverlay.__init__" seconds=0.0
+2026-11-25T13:42:22.643507+00:00 [MainThread] thread="MainThread" event="stage.begin" name="MainWindow._register_hotkeys"
+2026-11-25T13:42:22.791808+00:00 [MainThread] thread="MainThread" event="hotkeys.configured" toggle="Num-" mic="Num*" suppressed=true
+2026-11-25T13:42:22.791808+00:00 [MainThread] thread="MainThread" event="stage.end" name="MainWindow._register_hotkeys" seconds=0.156
+2026-11-25T13:42:22.791808+00:00 [MainThread] thread="MainThread" event="stage.end" name="MainWindow.__init__" seconds=0.235
+2026-11-25T13:42:22.796794+00:00 [MainThread] thread="MainThread" event="main.geometry" geometry=[2091, 332, 453, 735] available=[0, 0, 2560, 1400] dpr=1.0 visible=false hwnd=721972 screens=1
+2026-11-25T13:42:22.894532+00:00 [MainThread] thread="MainThread" event="bt.window.show" was_hidden=false args="{'win_visible': True, 'win_min': False, 'win_geo': [2091, 332, 453, 735], 'dpr': 1.0, 'cover': False, 'settling': False…
+2026-11-25T13:42:22.894532+00:00 [MainThread] thread="MainThread" event="bt.watch.skip" tag="show" reason="no-native-window"
+2026-11-25T13:42:22.905504+00:00 [MainThread] thread="MainThread" event="main.snapshot" visible=true minimized=false geometry=[2091, 332, 453, 735] dpr=1.0 chrome_hwnd=null worker_running=false chromium_exit=null overlay_visible=true page_verdict=null native_mode=false chat_ready=false cover_visible=false settling=false
+2026-11-25T13:42:22.905504+00:00 [MainThread] thread="MainThread" event="main.shown" visible=true geometry=[2091, 332, 453, 735]
+2026-11-25T13:42:22.931434+00:00 [MainThread] thread="MainThread" event="stage.begin" name="MainWindow._start_chrome"
+2026-11-25T13:42:22.934426+00:00 [MainThread] thread="MainThread" event="browser.discovered" count=2 candidates=[{"name": "chrome", "kind": "chrome", "path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "rank": 2}, …
+2026-11-25T13:42:22.940410+00:00 [MainThread] thread="MainThread" event="browser.discovered" count=2 candidates=[{"name": "chrome", "kind": "chrome", "path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "rank": 2}, …
+2026-11-25T13:42:22.940410+00:00 [MainThread] thread="MainThread" event="browser.try" name="chrome" kind="chrome" attempt=1 gpu=true
+2026-11-25T13:42:22.959359+00:00 [MainThread] thread="MainThread" event="browser.zoom_prefs" level=-2.223901 files=["C:\\Users\\G5KC\\AppData\\Roaming\\Legalyze\\browser-profile\\Default\\Preferences", "C:\\Users\\G5KC\\AppData\\Roamin…
+2026-11-25T13:42:22.989279+00:00 [MainThread] thread="MainThread" event="browser.permissions" files=["C:\\Users\\G5KC\\AppData\\Roaming\\Legalyze\\browser-profile\\Default\\Preferences", "C:\\Users\\G5KC\\AppData\\Roamin…
+2026-11-25T13:42:23.021202+00:00 [MainThread] thread="MainThread" event="browser.locale_prefs" lang="ru-RU" accept="ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7" files=["C:\\Users\\G5KC\\AppData\\Roaming\\Legalyze\\browser-profile\\Default\\Preferences", "C:\\Users\\G5KC\\AppData\\Roamin…
+2026-11-25T13:42:23.022201+00:00 [MainThread] thread="MainThread" event="env.contract" release="universal-embedded-v26" exe="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" exe_bytes=4723864 exe_mtime=1794447596.6 kind="chrome" port=59070 profile="C:\\Users\\G5KC\\AppData\\Roaming\\Legalyze\\browser-profile" url="https://google.com/ai" attempt=0 gpu=true width=453 height=735 lang="ru-RU" light_theme=true zoom=0.666667 zoom_level=-2.223901086 switches=["--remote-debugging-port=59070", "--remote-debugging-address=127.0.0.1", "--user-data-dir=C:\\Users\\G5KC\\AppData\\Roa… switches_count=24 disabled_features=["SystemTitlebar", "CaptionButtons", "Translate", "OptimizationHints", "MediaRouter", "GlobalMediaControls", "DialMediaR… force_light_features=["WebContentsForceDark", "DarkMode"]
+2026-11-25T13:42:23.022201+00:00 [MainThread] thread="MainThread" event="browser.binary" path="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" bytes=4723864 mtime=1794447596.6
+2026-11-25T13:42:23.034168+00:00 [MainThread] thread="MainThread" event="browser.prefs_verified" file="C:\\Users\\G5KC\\AppData\\Roaming\\Legalyze\\browser-profile\\Default\\Preferences" drift=[] zoom_level=-2.223901 accept_languages="ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7" mic_hosts=15
+2026-11-25T13:42:23.034168+00:00 [MainThread] thread="MainThread" event="browser.prefs_verified" file="C:\\Users\\G5KC\\AppData\\Roaming\\Legalyze\\browser-profile\\Preferences" drift=[] zoom_level=-2.223901 accept_languages="ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7" mic_hosts=15
+2026-11-25T13:42:23.034168+00:00 [MainThread] thread="MainThread" event="browser.launch" exe="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" kind="chrome" port=59070 profile="C:\\Users\\G5KC\\AppData\\Roaming\\Legalyze\\browser-profile" gpu=true width=453 height=735 attempt=0
+2026-11-25T13:42:23.043144+00:00 [MainThread] thread="MainThread" event="browser.spawned" port=59070
+2026-11-25T13:42:23.044141+00:00 [MainThread] thread="MainThread" event="stage.end" name="MainWindow._start_chrome" seconds=0.11
+2026-11-25T13:42:24.041539+00:00 [MainThread] thread="MainThread" event="browser.target_chosen" pages=["https://google.com/ai"] chosen="https://google.com/ai" wall_only=false
+2026-11-25T13:42:24.041539+00:00 [MainThread] thread="MainThread" event="browser.devtools" browser="Chrome/158.0.8127.37" url="https://google.com/ai"
+2026-11-25T13:42:24.337748+00:00 [MainThread] thread="MainThread" event="win32.find_window" wanted=[4892, 10408, 12332, 14028, 17664, 19112, 22372] found=395304 windows=[{"hwnd": 3934134, "pid": 19112, "visible": false, "rect": [0, 0, 0, 0], "style": 2348810240, "exstyle": 128, "parent": …
+2026-11-25T13:42:24.337748+00:00 [MainThread] thread="MainThread" event="trace.begin" name="NativeHost._embed" args=2 kwargs=0
+2026-11-25T13:42:24.341735+00:00 [MainThread] thread="MainThread" event="win32.hide_window" hwnd=395304 was_visible=true visible=false error=0
+2026-11-25T13:42:24.341735+00:00 [MainThread] thread="MainThread" event="embed.before" child={"hwnd": 395304, "pid": 22372, "visible": false, "rect": [-8192, -8192, -7739, -7457], "style": 114229248, "exstyle": 25… host={"hwnd": 328786, "pid": 20408, "visible": true, "rect": [2091, 332, 2544, 1067], "style": 1442840576, "exstyle": 0, "par…
+2026-11-25T13:42:24.342732+00:00 [MainThread] thread="MainThread" event="win32.style" hwnd=395304 index=-16 previous=114229248 new=1442840576 error=0
+2026-11-25T13:42:24.347720+00:00 [MainThread] thread="MainThread" event="embed.SetParent" error=0 actual=328786 expected=328786
+2026-11-25T13:42:24.347720+00:00 [MainThread] thread="MainThread" event="win32.style" hwnd=395304 index=-20 previous=0 new=128 error=0
+2026-11-25T13:42:24.349716+00:00 [MainThread] thread="MainThread" event="win32.sync" hwnd=395304 wanted=[-10, -24, 453, 735] ok=true error=0 actual={"hwnd": 395304, "pid": 22372, "visible": true, "rect": [2081, 308, 2534, 1043], "style": 1442840576, "exstyle": 128, "p…
+2026-11-25T13:42:24.350711+00:00 [MainThread] thread="MainThread" event="embed.after" child={"hwnd": 395304, "pid": 22372, "visible": true, "rect": [2081, 308, 2534, 1043], "style": 1442840576, "exstyle": 128, "p… cover=3082470
+2026-11-25T13:42:24.368664+00:00 [MainThread] thread="MainThread" event="win32.sync" hwnd=395304 wanted=[-10, -24, 453, 735] ok=true error=0 actual={"hwnd": 395304, "pid": 22372, "visible": true, "rect": [2081, 308, 2534, 1043], "style": 1442840576, "exstyle": 128, "p…
+2026-11-25T13:42:24.369661+00:00 [MainThread] thread="MainThread" event="trace.begin" name="NativeHost.hide_taskbar" args=1 kwargs=0
+2026-11-25T13:42:24.429276+00:00 [MainThread] thread="MainThread" event="win32.taskbar_hidden" hwnd=395304 style=true delete_tab=false
+2026-11-25T13:42:24.432268+00:00 [MainThread] thread="MainThread" event="trace.end" name="NativeHost.hide_taskbar" seconds=0.062
+2026-11-25T13:42:24.432268+00:00 [MainThread] thread="MainThread" event="browser.embedded" hwnd=395304 parent=328786 port=59070 exe="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" kind="chrome" inset=[-10, -24, 10, 24]
+2026-11-25T13:42:24.433265+00:00 [MainThread] thread="MainThread" event="stage.begin" name="MainWindow._on_browser_ready"
+2026-11-25T13:42:24.433265+00:00 [MainThread] thread="MainThread" event="trace.begin" name="MainWindow._on_browser_ready" args=2 kwargs=0
+2026-11-25T13:42:24.433265+00:00 [MainThread] thread="MainThread" event="browser.ready" port=59070 hwnd=395304
+2026-11-25T13:42:24.434264+00:00 [MainThread] thread="MainThread" event="browser.mode" engine="external_chrome" exe="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" kind="chrome" port=59070 hwnd=395304 zoom=0.667 inset=[-10, -24, 10, 24] dx=-10 dy=-24 light_theme=true lang="ru-RU" placeholder=[453, 735] dpr=1.0 screens=1 url="https://google.com/ai"
+2026-11-25T13:42:24.434264+00:00 [MainThread] thread="MainThread" event="state.set" key="browser.mode" value="external_chrome"
+2026-11-25T13:42:24.438251+00:00 [MainThread] thread="MainThread" event="win32.sync" hwnd=395304 wanted=[-10, -24, 453, 735] ok=true error=0 actual={"hwnd": 395304, "pid": 22372, "visible": true, "rect": [2081, 308, 2534, 1043], "style": 1442840576, "exstyle": 128, "p…
+2026-11-25T13:42:24.438251+00:00 [Dummy-3] thread="Dummy-3" event="trace.begin" name="ChromeWorker.run" args=1 kwargs=0
+2026-11-25T13:42:24.439249+00:00 [Dummy-3] thread="Dummy-3" event="stage.begin" name="attach_chrome"
+2026-11-25T13:42:24.440246+00:00 [MainThread] thread="MainThread" event="trace.end" name="MainWindow._on_browser_ready" seconds=0.0
+2026-11-25T13:42:24.440246+00:00 [MainThread] thread="MainThread" event="stage.end" name="MainWindow._on_browser_ready" seconds=0.0
+2026-11-25T13:42:24.440246+00:00 [MainThread] thread="MainThread" event="trace.end" name="NativeHost._embed" seconds=0.093
+2026-11-25T13:42:24.475153+00:00 [Dummy-3] thread="Dummy-3" event="browser.target_chosen" pages=["https://www.google.com/search?udm=50&aep=11"] chosen="https://www.google.com/search?udm=50&aep=11" wall_only=false
+2026-11-25T13:42:24.475153+00:00 [Dummy-3] thread="Dummy-3" event="cdp.discovered" browser="Chrome/158.0.8127.37" protocol="1.3" pages=1
+2026-11-25T13:42:24.475153+00:00 [Dummy-3] thread="Dummy-3" event="stage.begin" name="CDP.__init__"
+2026-11-25T13:42:24.489115+00:00 [Dummy-3] thread="Dummy-3" event="stage.end" name="CDP.__init__" seconds=0.015
+2026-11-25T13:42:24.490113+00:00 [Dummy-3] thread="Dummy-3" event="stage.begin" name="CDP.__init__"
+2026-11-25T13:42:24.495099+00:00 [Dummy-3] thread="Dummy-3" event="stage.end" name="CDP.__init__" seconds=0.016
+2026-11-25T13:42:24.495099+00:00 [Dummy-3] thread="Dummy-3" event="stage.end" name="attach_chrome" seconds=0.063
+2026-11-25T13:42:24.495099+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Page.enable" timeout=5 params=[]
+2026-11-25T13:42:24.522028+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Page.enable" seconds=0.016 keys=[]
+2026-11-25T13:42:24.522028+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Page.addScriptToEvaluateOnNewDocument" timeout=5 params=["source"]
+2026-11-25T13:42:24.530007+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Page.addScriptToEvaluateOnNewDocument" seconds=0.015 keys=["identifier"]
+2026-11-25T13:42:24.530007+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Runtime.evaluate" timeout=5 params=["awaitPromise", "expression", "generatePreview", "returnByValue", "userGesture"]
+2026-11-25T13:42:24.604806+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Runtime.evaluate" seconds=0.078 keys=["result"]
+2026-11-25T13:42:24.604806+00:00 [Dummy-3] thread="Dummy-3" event="browser.consent_installed"
+2026-11-25T13:42:24.604806+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Runtime.evaluate" timeout=5 params=["awaitPromise", "expression", "generatePreview", "returnByValue", "userGesture"]
+2026-11-25T13:42:24.608796+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Runtime.evaluate" seconds=0.0 keys=["result"]
+2026-11-25T13:42:24.608796+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Target.getBrowserContexts" timeout=5 params=[]
+2026-11-25T13:42:24.610790+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Target.getBrowserContexts" seconds=0.0 keys=["browserContextIds", "defaultBrowserContextId"]
+2026-11-25T13:42:24.610790+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Browser.grantPermissions" timeout=5 params=["origin", "permissions"]
+2026-11-25T13:42:24.614780+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Browser.grantPermissions" seconds=0.0 keys=[]
+2026-11-25T13:42:24.614780+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Browser.grantPermissions" timeout=5 params=["origin", "permissions"]
+2026-11-25T13:42:24.615777+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Browser.grantPermissions" seconds=0.0 keys=[]
+2026-11-25T13:42:24.615777+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Browser.grantPermissions" timeout=5 params=["origin", "permissions"]
+2026-11-25T13:42:24.617772+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Browser.grantPermissions" seconds=0.0 keys=[]
+2026-11-25T13:42:24.618769+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Browser.grantPermissions" timeout=5 params=["origin", "permissions"]
+2026-11-25T13:42:24.618769+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Browser.grantPermissions" seconds=0.0 keys=[]
+2026-11-25T13:42:24.618769+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Runtime.evaluate" timeout=3 params=["awaitPromise", "expression", "generatePreview", "returnByValue", "userGesture"]
+2026-11-25T13:42:24.623755+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Runtime.evaluate" seconds=0.0 keys=["result"]
+2026-11-25T13:42:24.623755+00:00 [Dummy-3] thread="Dummy-3" event="page.surface" verdict="ai_mode" ready="interactive" composer=4 files=0 chips=0 dark=false bg="rgb(255, 255, 255)" scheme="normal" account=false pending=9 bodyChildren=26 lang="ru-RU" host="www.google.com" path="/search"
+2026-11-25T13:42:24.623755+00:00 [Dummy-3] thread="Dummy-3" event="page.wait" round=1 left=90.0 verdict="ai_mode" ready="interactive" composer=4 stable=0 pending=9
+2026-11-25T13:42:24.755403+00:00 [MainThread] thread="MainThread" event="trace.begin" name="NativeHost.hide_taskbar" args=1 kwargs=0
+2026-11-25T13:42:24.831710+00:00 [MainThread] thread="MainThread" event="win32.taskbar_hidden" hwnd=395304 style=true delete_tab=false
+2026-11-25T13:42:24.834703+00:00 [MainThread] thread="MainThread" event="trace.end" name="NativeHost.hide_taskbar" seconds=0.078
+2026-11-25T13:42:24.957375+00:00 [MainThread] thread="MainThread" event="win32.sync" hwnd=395304 wanted=[-10, -24, 453, 735] ok=true error=0 actual={"hwnd": 395304, "pid": 22372, "visible": true, "rect": [2081, 308, 2534, 1043], "style": 1442840576, "exstyle": 128, "p…
+2026-11-25T13:42:25.124927+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Runtime.evaluate" timeout=3 params=["awaitPromise", "expression", "generatePreview", "returnByValue", "userGesture"]
+2026-11-25T13:42:25.220671+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Runtime.evaluate" seconds=0.094 keys=["result"]
+2026-11-25T13:42:25.221667+00:00 [Dummy-3] thread="Dummy-3" event="page.surface" verdict="ai_mode" ready="complete" composer=4 files=0 chips=0 dark=false bg="rgb(255, 255, 255)" scheme="normal" account=false pending=23 bodyChildren=44 lang="ru-RU" host="www.google.com" path="/search"
+2026-11-25T13:42:25.221667+00:00 [Dummy-3] thread="Dummy-3" event="page.theme_probe" bg="rgb(255, 255, 255)" scheme="normal" dark=false verdict="ai_mode"
+2026-11-25T13:42:25.221667+00:00 [Dummy-3] thread="Dummy-3" event="page.wait" round=2 left=89.4 verdict="ai_mode" ready="complete" composer=4 stable=1 pending=23
+2026-11-25T13:42:25.234633+00:00 [MainThread] thread="MainThread" event="trace.begin" name="NativeHost.hide_taskbar" args=1 kwargs=0
+2026-11-25T13:42:25.315418+00:00 [MainThread] thread="MainThread" event="win32.taskbar_hidden" hwnd=395304 style=true delete_tab=false
+2026-11-25T13:42:25.331374+00:00 [MainThread] thread="MainThread" event="trace.end" name="NativeHost.hide_taskbar" seconds=0.094
+2026-11-25T13:42:25.632569+00:00 [MainThread] thread="MainThread" event="trace.begin" name="NativeHost.hide_taskbar" args=1 kwargs=0
+2026-11-25T13:42:25.666477+00:00 [MainThread] thread="MainThread" event="win32.taskbar_hidden" hwnd=395304 style=true delete_tab=false
+2026-11-25T13:42:25.668472+00:00 [MainThread] thread="MainThread" event="trace.end" name="NativeHost.hide_taskbar" seconds=0.047
+2026-11-25T13:42:25.722329+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Runtime.evaluate" timeout=3 params=["awaitPromise", "expression", "generatePreview", "returnByValue", "userGesture"]
+2026-11-25T13:42:25.737289+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Runtime.evaluate" seconds=0.015 keys=["result"]
+2026-11-25T13:42:25.737289+00:00 [Dummy-3] thread="Dummy-3" event="page.theme_probe" bg="rgb(255, 255, 255)" scheme="normal" dark=false verdict="ai_mode"
+2026-11-25T13:42:25.737289+00:00 [Dummy-3] thread="Dummy-3" event="page.ready" rounds=3 verdict="ai_mode" theme_repairs=0
+2026-11-25T13:42:25.737289+00:00 [Dummy-3] thread="Dummy-3" event="state.set" key="page.verdict" value="ai_mode"
+2026-11-25T13:42:25.737289+00:00 [Dummy-3] thread="Dummy-3" event="state.set" key="page.ready" value=true
+2026-11-25T13:42:25.737289+00:00 [Dummy-3] thread="Dummy-3" event="state.set" key="page.blocked" value=""
+2026-11-25T13:42:25.737289+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Page.addScriptToEvaluateOnNewDocument" timeout=5 params=["source"]
+2026-11-25T13:42:25.738288+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Page.addScriptToEvaluateOnNewDocument" seconds=0.0 keys=["identifier"]
+2026-11-25T13:42:25.738288+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Page.addScriptToEvaluateOnNewDocument" timeout=5 params=["source"]
+2026-11-25T13:42:25.738288+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Page.addScriptToEvaluateOnNewDocument" seconds=0.0 keys=["identifier"]
+2026-11-25T13:42:25.738288+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Page.addScriptToEvaluateOnNewDocument" timeout=5 params=["source"]
+2026-11-25T13:42:25.739285+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Page.addScriptToEvaluateOnNewDocument" seconds=0.0 keys=["identifier"]
+2026-11-25T13:42:25.739285+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Page.addScriptToEvaluateOnNewDocument" timeout=5 params=["source"]
+2026-11-25T13:42:25.739285+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Page.addScriptToEvaluateOnNewDocument" seconds=0.0 keys=["identifier"]
+2026-11-25T13:42:25.739285+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Page.addScriptToEvaluateOnNewDocument" timeout=5 params=["source"]
+2026-11-25T13:42:25.740282+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Page.addScriptToEvaluateOnNewDocument" seconds=0.0 keys=["identifier"]
+2026-11-25T13:42:25.740282+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Page.enable" timeout=5 params=[]
+2026-11-25T13:42:25.740282+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Page.enable" seconds=0.0 keys=[]
+2026-11-25T13:42:25.740282+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Emulation.setLocaleOverride" timeout=4 params=["locale"]
+2026-11-25T13:42:25.742275+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Emulation.setLocaleOverride" seconds=0.0 keys=[]
+2026-11-25T13:42:25.742275+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Emulation.setAutoDarkModeOverride" timeout=4 params=["enabled"]
+2026-11-25T13:42:25.742275+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Emulation.setAutoDarkModeOverride" seconds=0.0 keys=[]
+2026-11-25T13:42:25.742275+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Emulation.setEmulatedMedia" timeout=4 params=["features"]
+2026-11-25T13:42:25.743274+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Emulation.setEmulatedMedia" seconds=0.016 keys=[]
+2026-11-25T13:42:25.743274+00:00 [Dummy-3] thread="Dummy-3" event="page.language_theme" locale="ru-RU" auto_dark=false color_scheme="light"
+2026-11-25T13:42:25.743274+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Runtime.evaluate" timeout=5 params=["awaitPromise", "expression", "generatePreview", "returnByValue", "userGesture"]
+2026-11-25T13:42:25.744270+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Runtime.evaluate" seconds=0.0 keys=["result"]
+2026-11-25T13:42:25.744270+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Runtime.evaluate" timeout=5 params=["awaitPromise", "expression", "generatePreview", "returnByValue", "userGesture"]
+2026-11-25T13:42:25.745267+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Runtime.evaluate" seconds=0.0 keys=["result"]
+2026-11-25T13:42:25.745267+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Runtime.evaluate" timeout=5 params=["awaitPromise", "expression", "generatePreview", "returnByValue", "userGesture"]
+2026-11-25T13:42:25.746265+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Runtime.evaluate" seconds=0.0 keys=["result"]
+2026-11-25T13:42:25.746265+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Runtime.evaluate" timeout=5 params=["awaitPromise", "expression", "generatePreview", "returnByValue", "userGesture"]
+2026-11-25T13:42:25.747261+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Runtime.evaluate" seconds=0.0 keys=["result"]
+2026-11-25T13:42:25.747261+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Runtime.evaluate" timeout=5 params=["awaitPromise", "expression", "generatePreview", "returnByValue", "userGesture"]
+2026-11-25T13:42:25.749257+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Runtime.evaluate" seconds=0.0 keys=["result"]
+2026-11-25T13:42:25.749257+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Runtime.evaluate" timeout=3 params=["awaitPromise", "expression", "generatePreview", "returnByValue", "userGesture"]
+2026-11-25T13:42:25.755241+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Runtime.evaluate" seconds=0.0 keys=["result"]
+2026-11-25T13:42:25.755241+00:00 [Dummy-3] thread="Dummy-3" event="browser.zoom" source="native" ok=true css=[658, 1091] logical=[439, 728] physical=[439, 728] zoom=0.6672 overflow=0 innerWidth=658 innerHeight=1047 dpr=0.6666666865348816 scrollWidth=643
+2026-11-25T13:42:25.756237+00:00 [Dummy-3] thread="Dummy-3" event="webengine.zoom_applied" source="native" logical=[439, 728] physical=[439, 728]
+2026-11-25T13:42:25.756237+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Runtime.evaluate" timeout=5 params=["awaitPromise", "expression", "generatePreview", "returnByValue", "userGesture"]
+2026-11-25T13:42:25.756237+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Runtime.evaluate" seconds=0.0 keys=["result"]
+2026-11-25T13:42:25.756237+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Target.getBrowserContexts" timeout=5 params=[]
+2026-11-25T13:42:25.757235+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Target.getBrowserContexts" seconds=0.0 keys=["browserContextIds", "defaultBrowserContextId"]
+2026-11-25T13:42:25.757235+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Browser.grantPermissions" timeout=5 params=["origin", "permissions"]
+2026-11-25T13:42:25.757235+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Browser.grantPermissions" seconds=0.0 keys=[]
+2026-11-25T13:42:25.757235+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Browser.grantPermissions" timeout=5 params=["origin", "permissions"]
+2026-11-25T13:42:25.758233+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Browser.grantPermissions" seconds=0.0 keys=[]
+2026-11-25T13:42:25.758233+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Browser.grantPermissions" timeout=5 params=["origin", "permissions"]
+2026-11-25T13:42:25.758233+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Browser.grantPermissions" seconds=0.0 keys=[]
+2026-11-25T13:42:25.758233+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Browser.grantPermissions" timeout=5 params=["origin", "permissions"]
+2026-11-25T13:42:25.759230+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Browser.grantPermissions" seconds=0.016 keys=[]
+2026-11-25T13:42:25.759230+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Browser.setPermission" timeout=5 params=["origin", "permission", "setting"]
+2026-11-25T13:42:25.759230+00:00 [Dummy-3] thread="Dummy-3" event="cdp.protocol_error" method="Browser.setPermission" code=-32602 text="Invalid PermissionDescriptor name: audioCapture" params=["origin", "permission", "setting"]
+2026-11-25T13:42:25.762221+00:00 [Dummy-3] thread="Dummy-3" event="exception" where="CDP.send:Browser.setPermission" occurrence=1 type="RuntimeError" errno=null winerror=null frames=[{"file": "main.py", "line": 817, "function": "send"}]
+2026-11-25T13:42:25.762221+00:00 [Dummy-3] thread="Dummy-3" event="browser.set_permission_unsupported" error="CDP protocol error: Browser.setPermission"
+2026-11-25T13:42:25.762221+00:00 [Dummy-3] thread="Dummy-3" event="cdp.send" method="Runtime.evaluate" timeout=5 params=["awaitPromise", "expression", "generatePreview", "returnByValue", "userGesture"]
+2026-11-25T13:42:25.763218+00:00 [Dummy-3] thread="Dummy-3" event="cdp.result" method="Runtime.evaluate" seconds=0.0 keys=["result"]
+2026-11-25T13:42:25.763218+00:00 [Dummy-3] thread="Dummy-3" event="browser.mic_granted" origins=["https://aistudio.google.com", "https://gemini.google.com", "https://www.google.com", "https://google.com"] context=false state="granted" set_permission_used=false
+2026-11-25T13:42:25.763218+00:00 [Dummy-3] thread="Dummy-3" event="webengine.chat_ready" ready=true verdict="ai_mode" blocked="" rounds=3 theme_repairs=0
+2026-11-25T13:42:25.763218+00:00 [Dummy-3] thread="Dummy-3" event="trace.end" name="ChromeWorker.run" seconds=1.329
+2026-11-25T13:42:25.763218+00:00 [MainThread] thread="MainThread" event="stage.begin" name="MainWindow._on_hwnd"
+2026-11-25T13:42:25.763218+00:00 [MainThread] thread="MainThread" event="trace.begin" name="MainWindow._on_hwnd" args=2 kwargs=0
+2026-11-25T13:42:25.764216+00:00 [MainThread] thread="MainThread" event="cdp.send" method="Runtime.evaluate" timeout=5 params=["awaitPromise", "expression", "generatePreview", "returnByValue", "userGesture"]
+2026-11-25T13:42:25.764216+00:00 [MainThread] thread="MainThread" event="cdp.result" method="Runtime.evaluate" seconds=0.0 keys=["result"]
+2026-11-25T13:42:25.764216+00:00 [MainThread] thread="MainThread" event="browser.speech_surface" sr=true gum=true perm=true lang="ru-RU" langs="ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+2026-11-25T13:42:25.765213+00:00 [MainThread] thread="MainThread" event="bt.chat.ready" verdict="ai_mode" blocked="" args="{'win_visible': True, 'win_min': False, 'win_geo': [2091, 332, 453, 735], 'dpr': 1.0, 'cover': True, 'settling': False,…
+2026-11-25T13:42:25.765213+00:00 [PageSnapshot] thread="PageSnapshot" event="cdp.send" method="Runtime.evaluate" timeout=3 params=["awaitPromise", "expression", "generatePreview", "returnByValue", "userGesture"]
+2026-11-25T13:42:25.774190+00:00 [MainThread] thread="MainThread" event="stage.begin" name="PromptLoaderWorker.__init__"
+2026-11-25T13:42:25.774190+00:00 [MainThread] thread="MainThread" event="stage.end" name="PromptLoaderWorker.__init__" seconds=0.0
+2026-11-25T13:42:25.779176+00:00 [PageSnapshot] thread="PageSnapshot" event="cdp.result" method="Runtime.evaluate" seconds=0.015 keys=["result"]
+2026-11-25T13:42:25.781172+00:00 [MainThread] thread="MainThread" event="trace.end" name="MainWindow._on_hwnd" seconds=0.015
+2026-11-25T13:42:25.781172+00:00 [MainThread] thread="MainThread" event="stage.end" name="MainWindow._on_hwnd" seconds=0.015
+2026-11-25T13:42:25.781172+00:00 [PageSnapshot] thread="PageSnapshot" event="cdp.send" method="Runtime.evaluate" timeout=4 params=["awaitPromise", "expression", "generatePreview", "returnByValue", "userGesture"]
+2026-11-25T13:42:25.786158+00:00 [Dummy-4] thread="Dummy-4" event="stage.begin" name="generate_hwid"
+2026-11-25T13:42:25.786158+00:00 [Dummy-4] thread="Dummy-4" event="hwid.command.begin" executable="wmic"
+2026-11-25T13:42:25.842011+00:00 [PageSnapshot] thread="PageSnapshot" event="cdp.result" method="Runtime.evaluate" seconds=0.063 keys=["result"]
+2026-11-25T13:42:25.851982+00:00 [PageSnapshot] thread="PageSnapshot" event="cdp.send" method="Runtime.evaluate" timeout=0.6 params=["awaitPromise", "expression", "generatePreview", "returnByValue", "userGesture"]
+2026-11-25T13:42:25.853978+00:00 [PageSnapshot] thread="PageSnapshot" event="cdp.result" method="Runtime.evaluate" seconds=0.015 keys=["result"]
+2026-11-25T13:42:25.853978+00:00 [PageSnapshot] thread="PageSnapshot" event="cdp.send" method="Runtime.evaluate" timeout=5 params=["awaitPromise", "expression", "generatePreview", "returnByValue", "userGesture"]
+2026-11-25T13:42:25.871928+00:00 [PageSnapshot] thread="PageSnapshot" event="cdp.result" method="Runtime.evaluate" seconds=0.016 keys=["result"]
+2026-11-25T13:42:25.909831+00:00 [Dummy-4] thread="Dummy-4" event="hwid.command.end" executable="wmic" returncode=0 has_output=false
+2026-11-25T13:42:25.909831+00:00 [Dummy-4] thread="Dummy-4" event="hwid.command.begin" executable="powershell.exe"
+2026-11-25T13:42:25.932765+00:00 [MainThread] thread="MainThread" event="trace.begin" name="NativeHost.hide_taskbar" args=1 kwargs=0
+2026-11-25T13:42:25.973656+00:00 [MainThread] thread="MainThread" event="win32.taskbar_hidden" hwnd=395304 style=true delete_tab=false
+2026-11-25T13:42:25.975651+00:00 [MainThread] thread="MainThread" event="trace.end" name="NativeHost.hide_taskbar" seconds=0.032
+2026-11-25T13:42:25.976649+00:00 [MainThread] thread="MainThread" event="win32.sync" hwnd=395304 wanted=[-10, -24, 453, 735] ok=true error=0 actual={"hwnd": 395304, "pid": 22372, "visible": true, "rect": [2081, 308, 2534, 1043], "style": 1442840576, "exstyle": 128, "p…
+2026-11-25T13:42:26.017539+00:00 [MainThread] thread="MainThread" event="win32.sync" hwnd=395304 wanted=[-10, -24, 453, 735] ok=true error=0 actual={"hwnd": 395304, "pid": 22372, "visible": true, "rect": [2081, 308, 2534, 1043], "style": 1442840576, "exstyle": 128, "p…
+2026-11-25T13:42:26.365627+00:00 [MainThread] thread="MainThread" event="win32.sync" hwnd=395304 wanted=[-10, -24, 453, 735] ok=true error=0 actual={"hwnd": 395304, "pid": 22372, "visible": true, "rect": [2081, 308, 2534, 1043], "style": 1442840576, "exstyle": 128, "p…
+2026-11-25T13:42:26.602991+00:00 [MainThread] thread="MainThread" event="win32.sync" hwnd=395304 wanted=[-10, -24, 453, 735] ok=true error=0 actual={"hwnd": 395304, "pid": 22372, "visible": true, "rect": [2081, 308, 2534, 1043], "style": 1442840576, "exstyle": 128, "p…
+2026-11-25T13:42:26.685770+00:00 [MainThread] thread="MainThread" event="win32.sync" hwnd=395304 wanted=[-10, -24, 453, 735] ok=true error=0 actual={"hwnd": 395304, "pid": 22372, "visible": true, "rect": [2081, 308, 2534, 1043], "style": 1442840576, "exstyle": 128, "p…
+2026-11-25T13:42:26.930673+00:00 [MainThread] thread="MainThread" event="trace.begin" name="NativeHost.hide_taskbar" args=1 kwargs=0
+2026-11-25T13:42:26.987137+00:00 [MainThread] thread="MainThread" event="win32.taskbar_hidden" hwnd=395304 style=true delete_tab=false
+2026-11-25T13:42:26.988134+00:00 [MainThread] thread="MainThread" event="trace.end" name="NativeHost.hide_taskbar" seconds=0.047
+2026-11-25T13:42:27.698166+00:00 [Dummy-4] thread="Dummy-4" event="hwid.command.end" executable="powershell.exe" returncode=0 has_output=false
+2026-11-25T13:42:27.698166+00:00 [Dummy-4] thread="Dummy-4" event="hwid.command.begin" executable="wmic"
+2026-11-25T13:42:27.834800+00:00 [MainThread] thread="MainThread" event="win32.sync" hwnd=395304 wanted=[-10, -24, 453, 735] ok=true error=0 actual={"hwnd": 395304, "pid": 22372, "visible": true, "rect": [2081, 308, 2534, 1043], "style": 1442840576, "exstyle": 128, "p…
+2026-11-25T13:42:27.836314+00:00 [MainThread] thread="MainThread" event="win32.sync" hwnd=395304 wanted=[-10, -24, 453, 735] ok=true error=0 actual={"hwnd": 395304, "pid": 22372, "visible": true, "rect": [2081, 308, 2534, 1043], "style": 1442840576, "exstyle": 128, "p…
+2026-11-25T13:42:27.900136+00:00 [MainThread] thread="MainThread" event="main.snapshot" visible=true minimized=false geometry=[2091, 332, 453, 735] dpr=1.0 chrome_hwnd=395304 worker_running=false chromium_exit=null overlay_visible=false page_verdict="ai_mode" native_mode=true chat_ready=true cover_visible=false settling=false
+2026-11-25T13:42:28.365401+00:00 [Dummy-4] thread="Dummy-4" event="hwid.command.end" executable="wmic" returncode=0 has_output=false
+2026-11-25T13:42:28.365401+00:00 [Dummy-4] thread="Dummy-4" event="hwid.command.begin" executable="powershell.exe"
+2026-11-25T13:42:28.432221+00:00 [MainThread] thread="MainThread" event="trace.begin" name="NativeHost.hide_taskbar" args=1 kwargs=0
+2026-11-25T13:42:28.498046+00:00 [MainThread] thread="MainThread" event="win32.taskbar_hidden" hwnd=395304 style=true delete_tab=false
+2026-11-25T13:42:28.500041+00:00 [MainThread] thread="MainThread" event="trace.end" name="NativeHost.hide_taskbar" seconds=0.063
+2026-11-25T13:42:28.500041+00:00 [MainThread] thread="MainThread" event="trace.begin" name="NativeHost.hide_taskbar" args=1 kwargs=0
+2026-11-25T13:42:28.567859+00:00 [MainThread] thread="MainThread" event="win32.taskbar_hidden" hwnd=395304 style=true delete_tab=false
+2026-11-25T13:42:28.569854+00:00 [MainThread] thread="MainThread" event="trace.end" name="NativeHost.hide_taskbar" seconds=0.062
+2026-11-25T13:42:29.188100+00:00 [Dummy-4] thread="Dummy-4" event="hwid.command.end" executable="powershell.exe" returncode=0 has_output=false
+2026-11-25T13:42:29.188100+00:00 [Dummy-4] thread="Dummy-4" event="stage.end" name="generate_hwid" seconds=3.406
+2026-11-25T13:42:29.341028+00:00 [MainThread] thread="MainThread" event="win32.sync" hwnd=395304 wanted=[-10, -24, 453, 735] ok=true error=0 actual={"hwnd": 395304, "pid": 22372, "visible": true, "rect": [2081, 308, 2534, 1043], "style": 1442840576, "exstyle": 128, "p…
+2026-11-25T13:42:29.349176+00:00 [MainThread] thread="MainThread" event="documents.gov_assets" gerb="D:\\Users\\79528\\PycharmProjects\\PythonProject1\\Legalyze\\test2\\TestLegalUniversal_v62\\data\\gerb_gov.png" pechat="D:\\Users\\79528\\PycharmProjects\\PythonProject1\\Legalyze\\test2\\TestLegalUniversal_v62\\data\\stamp_gov.png" shrift_podpisi="D:\\Users\\79528\\PycharmProjects\\PythonProject1\\Legalyze\\test2\\TestLegalUniversal_v62\\data\\fonts\\Caveat-Regular…
+2026-11-25T13:42:29.461086+00:00 [MainThread] thread="MainThread" event="exception" where="sys.excepthook" occurrence=1 type="NameError" errno=null winerror=null frames=[{"file": "main.py", "line": 5734, "function": "<lambda>"}, {"file": "main.py", "line": 5880, "function": "_open_postano…
