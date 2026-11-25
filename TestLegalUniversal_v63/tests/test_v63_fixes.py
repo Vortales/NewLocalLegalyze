@@ -1,0 +1,339 @@
+"""test_v63_fixes.py — три замечания выгрузки `Постановление.7z` (v63).
+
+Замечания пользователя:
+
+1. «Вставил Обращение в „Обращение (вставить целиком)“ — пытаюсь нажать на
+   кнопку „Этап 1“, а она недоступна. Нажимаю на „Проверить ещё раз“…»
+2. «Проанализируй ИИ-документ.txt … в частности „УСТАНОВИЛ“».
+3. «При первом нажатии „Этап 1“ перезагрузить браузер существующими методами…
+   далее при нажатии „Сформировать“ для Этапа 2 (подэтапов 2) и Этапа 3
+   браузер не перезагружать… чтобы ИИ помнил Этапы 1, 2 и 3. И в конце
+   предусмотреть кнопку „Закрыть обращение“ на Этапе 3».
+
+Образцы в `tests/samples_v63/` — реальные файлы из выгрузки (не синтетика):
+именно на них видны и испорченный «УСТАНОВИЛ», и цепочки без маркеров.
+"""
+
+from __future__ import annotations
+
+import ast
+import unittest
+from pathlib import Path
+
+import gov_case as gc
+import ogp_stages
+import postanovlenie_prokuror_data as gdata
+
+ROOT = Path(__file__).resolve().parent.parent
+SAMPLES = Path(__file__).resolve().parent / "samples_v63"
+
+
+def _sample(name: str) -> str:
+    return (SAMPLES / name).read_text(encoding="utf-8", errors="replace")
+
+
+def _src(name: str) -> str:
+    return (ROOT / name).read_text(encoding="utf-8")
+
+
+def _block(src: str, start: str, end: str) -> str:
+    body = src[src.index(start):]
+    return body[:body.index(end)]
+
+
+# --------------------------------------------------------------------------- #
+#  П.2 — «УСТАНОВИЛ»: служебные блоки не печатаются в постановлении
+# --------------------------------------------------------------------------- #
+
+class V63EstablishedCleanTests(unittest.TestCase):
+    """Раздел «УСТАНОВИЛ» содержит только факты дела и правовую оценку."""
+
+    #: Что не должно попадать в бланк: наша реплика из чата и служебные блоки.
+    FORBIDDEN = (
+        "Проверь обращение",
+        "во вложении «Обращение.txt»",
+        "порядок проверки и формат ответа",
+        "ПРОВЕРКА ОБРАЩЕНИЯ",
+        "КОНЕЦ ПРОВЕРКИ",
+        "ЦЕПОЧКИ ЭТАПА 2",
+        "ЦЕПОЧКА A:",
+        "ЗАЧЕМ:",
+        "Состояние: Принято",
+        "Что проверить:",
+    )
+
+    def test_dirty_sample_contains_chat_leak(self):
+        """Образец действительно испорчен — иначе тест ничего не проверяет."""
+        dirty = _sample("испорченный_установил_этап1.txt")
+        found = [item for item in self.FORBIDDEN if item in dirty]
+        self.assertTrue(found, "в образце нет служебного мусора — образец не тот")
+
+    def test_clean_established_removes_chat_leak(self):
+        dirty = _sample("испорченный_установил_этап1.txt")
+        body = dirty[dirty.index("УСТАНОВИЛ:") + len("УСТАНОВИЛ:"):
+                     dirty.index("ПОСТАНОВИЛ:")]
+        clean = gdata.clean_established(body)
+        for item in self.FORBIDDEN:
+            self.assertNotIn(item, clean, f"в «УСТАНОВИЛ» осталось: {item}")
+
+    def test_parse_keeps_only_facts_in_established(self):
+        """Ответ постановления этапа 2: «УСТАНОВИЛ» = факты, а не блоки."""
+        doc = gdata.parse_gov_answer(_sample("ответ_постановление_этап2.txt"))
+        self.assertIsNotNone(doc)
+        established = doc.established or ""
+        self.assertGreater(len(established), 200, "«УСТАНОВИЛ» потерялся целиком")
+        for item in self.FORBIDDEN:
+            self.assertNotIn(item, established)
+        self.assertIn("London Skeletskoy", established)
+
+    def test_dirty_document_is_parsed_without_service_blocks(self):
+        """Документ этапа 1 из выгрузки: служебные блоки не попадают в бланк.
+
+        Это тот самый документ, по которому пришло замечание п.2: в его
+        «УСТАНОВИЛ» ИИ вставил нашу реплику из чата и пересказ блока
+        «ПРОВЕРКА ОБРАЩЕНИЯ» вместе с цепочками этапа 2.
+        """
+        text = _sample("испорченный_установил_этап1.txt")
+        doc = gdata.parse_gov_answer(text)
+        self.assertIsNotNone(doc)
+        for part in ((doc.established or ""), " ".join(doc.points or []),
+                     doc.situation or ""):
+            for item in self.FORBIDDEN:
+                self.assertNotIn(item, part, f"служебный текст в документе: {item}")
+
+    def test_intake_answer_is_not_a_document(self):
+        """Ответ «ПРОВЕРКА ОБРАЩЕНИЯ» — не постановление: его не печатают.
+
+        В нём нет документа, поэтому разбор обязан вернуть None (иначе клиент
+        напечатал бы служебный блок как постановление).
+        """
+        self.assertIsNone(gdata.parse_gov_answer(_sample("ответ_этап1_с_цепочками.txt")))
+
+    def test_service_blocks_are_cut_as_a_whole(self):
+        text = ("УСТАНОВИЛ: факт первый. ПРОВЕРКА ОБРАЩЕНИЯ Состояние: Принято "
+                "КОНЕЦ ПРОВЕРКИ ЦЕПОЧКИ ЭТАПА 2 ЦЕПОЧКА A: путь ЗАЧЕМ: быстро "
+                "1. О вызове — нужен КОНЕЦ ЦЕПОЧЕК факт второй.")
+        cleaned = gdata.clean_established(text)
+        self.assertIn("факт первый", cleaned)
+        self.assertIn("факт второй", cleaned)
+        self.assertNotIn("ЦЕПОЧКА", cleaned)
+        self.assertNotIn("Состояние", cleaned)
+
+    def test_instruction_sentence_inside_facts_is_removed(self):
+        """Инструкция может стоять в одном абзаце с фактами — режем по фразе."""
+        text = ("Проверь обращение. Текст обращения — во вложении «Обращение.txt», "
+                "порядок проверки и формат ответа — в файле заявки. "
+                "15 ноября 2026 года в Офис поступило обращение адвоката.")
+        cleaned = gdata.clean_established(text)
+        self.assertNotIn("Проверь обращение", cleaned)
+        self.assertNotIn("во вложении", cleaned)
+        self.assertIn("поступило обращение адвоката", cleaned)
+
+    def test_clean_established_is_idempotent(self):
+        text = _sample("испорченный_установил_этап1.txt")
+        body = text[text.index("УСТАНОВИЛ:") + len("УСТАНОВИЛ:"):
+                    text.index("ПОСТАНОВИЛ:")]
+        once = gdata.clean_established(body)
+        self.assertEqual(once, gdata.clean_established(once))
+
+
+# --------------------------------------------------------------------------- #
+#  П.3 — цепочки из ответа этапа 1 находятся, даже без маркеров «===»
+# --------------------------------------------------------------------------- #
+
+class V63ChainsTests(unittest.TestCase):
+    """Выгрузка: три цепочки в ответе были, а форма их не видела."""
+
+    def test_chains_are_found_in_real_answer(self):
+        chains = ogp_stages.split_chains(_sample("ответ_этап1_с_цепочками.txt"))
+        self.assertGreaterEqual(len(chains), 2,
+                                "цепочки из ответа ИИ не разобрались")
+        for chain in chains:
+            self.assertTrue(chain["letter"])
+            self.assertTrue(chain["title"])
+            self.assertGreaterEqual(len(chain["steps"]), 1)
+
+    def test_chain_steps_keep_their_titles(self):
+        chains = ogp_stages.split_chains(_sample("ответ_этап1_с_цепочками.txt"))
+        titles = [step["title"] for chain in chains for step in chain["steps"]]
+        self.assertTrue(any(t.lower().startswith("об истребовании") for t in titles),
+                        f"названия шагов потерялись: {titles[:4]}")
+
+    def test_steps_without_numbers_are_numbered(self):
+        text = ("ЦЕПОЧКИ ЭТАПА 2\n"
+                "ЦЕПОЧКА A: свой путь\n"
+                "ЗАЧЕМ: быстро\n"
+                "Об истребовании видеофиксации — получить запись\n"
+                "О наложении штрафной санкции — привлечь к ответственности\n"
+                "КОНЕЦ ЦЕПОЧЕК\n")
+        chains = ogp_stages.split_chains(text)
+        self.assertEqual(len(chains), 1)
+        self.assertEqual([step["n"] for step in chains[0]["steps"]], [1, 2])
+
+    def test_markdown_and_missing_markers_are_tolerated(self):
+        text = ("**ЦЕПОЧКИ ЭТАПА 2**\n"
+                "### ЦЕПОЧКА C: проверка своими силами\n"
+                "**ЗАЧЕМ:** быстро\n"
+                "1. Об истребовании видеофиксации — получить запись\n"
+                "2. О наложении штрафной санкции — привлечь к ответственности\n"
+                "**КОНЕЦ ЦЕПОЧЕК**\n")
+        chains = ogp_stages.split_chains(text)
+        self.assertEqual(len(chains), 1)
+        self.assertEqual(chains[0]["letter"], "C")
+        self.assertEqual(len(chains[0]["steps"]), 2)
+
+    def test_chains_present_sees_soft_marker(self):
+        self.assertTrue(ogp_stages.chains_present("ЦЕПОЧКИ ЭТАПА 2\nЦЕПОЧКА A: путь"))
+        self.assertFalse(ogp_stages.chains_present("просто текст без цепочек"))
+
+
+# --------------------------------------------------------------------------- #
+#  П.1 и п.3 — «Этап 1» доступен сразу, дальше без перезагрузки
+# --------------------------------------------------------------------------- #
+
+class V63Stage1ButtonTests(unittest.TestCase):
+    """Кнопка «Этап 1» включается по тексту обращения, а не по делу."""
+
+    def test_can_run_uses_appeal_text(self):
+        case = gc.GovCase(number="1")
+        self.assertFalse(ogp_stages.node_state(case, "1")["can_run"])
+        case.appeal_raw = "Обращение гражданина целиком"
+        self.assertTrue(ogp_stages.node_state(case, "1")["can_run"])
+
+    def test_appeal_field_writes_case_and_refreshes_button(self):
+        block = _block(_src("postanovlenie_prokuror_ui.py"),
+                       "def _on_appeal_changed", "def _keyword_summary")
+        self.assertIn('self.case.appeal_raw = self.texts["appeal_raw"].toPlainText()',
+                      block)
+        self.assertIn("self._refresh_main_action()", block)
+
+    def test_hint_names_the_stage_button(self):
+        block = _block(_src("postanovlenie_prokuror_ui.py"),
+                       "def _on_appeal_changed", "def _keyword_summary")
+        self.assertIn("«Этап 1»", block)
+
+
+class V63BrowserPolicyTests(unittest.TestCase):
+    """Перезагрузка браузера — только на этапе 1; дальше текущий диалог."""
+
+    def test_only_stage1_restarts_browser(self):
+        block = _block(_src("postanovlenie_prokuror_ui.py"),
+                       "def _send_node", "def _save_node_document")
+        self.assertIn('if str(kind) == "1":', block)
+        self.assertIn("self.restart_requested.emit", block)
+        self.assertIn("self.send_in_chat.emit", block)
+        # перезагрузка не должна быть безусловной
+        self.assertLess(block.index('if str(kind) == "1":'),
+                        block.index("self.restart_requested.emit"))
+
+    def test_form_has_send_in_chat_signal(self):
+        tree = ast.parse(_src("postanovlenie_prokuror_ui.py"))
+        signals = {node.targets[0].id for node in ast.walk(tree)
+                   if isinstance(node, ast.Assign)
+                   and isinstance(node.value, ast.Call)
+                   and getattr(node.value.func, "id", "") == "pyqtSignal"
+                   and isinstance(node.targets[0], ast.Name)}
+        self.assertIn("send_in_chat", signals)
+        self.assertIn("case_closed", signals)
+
+    def test_reorder_also_stays_in_chat(self):
+        block = _block(_src("postanovlenie_prokuror_ui.py"),
+                       "def _send_custom_order", "def _build_work_window")
+        self.assertIn("self.send_in_chat.emit", block)
+        self.assertNotIn("self.restart_requested.emit", block)
+
+    def test_main_sends_in_chat_without_restart(self):
+        """В обработчике нет ВЫЗОВА перезагрузки браузера (докстринг — можно)."""
+        tree = ast.parse(_src("main.py"))
+        handler = next(node for node in ast.walk(tree)
+                       if isinstance(node, ast.FunctionDef)
+                       and node.name == "_on_send_in_chat")
+        called = {node.func.attr for node in ast.walk(handler)
+                  if isinstance(node, ast.Call)
+                  and isinstance(node.func, ast.Attribute)}
+        self.assertNotIn("_restart_browser_for_fresh_chat", called)
+        self.assertNotIn("_restart_browser_hard", called)
+        self.assertIn("_resume_pending_send", called)
+        assigned = {node.targets[0].attr for node in ast.walk(handler)
+                    if isinstance(node, ast.Assign)
+                    and isinstance(node.targets[0], ast.Attribute)
+                    and isinstance(node.targets[0].value, ast.Name)
+                    and node.targets[0].value.id == "self"}
+        self.assertIn("_fresh_chat_requested", assigned)
+
+    def test_intake_still_restarts_for_clean_chat(self):
+        """Этап 1 по-прежнему идёт через чистый чат (точность решения)."""
+        block = _block(_src("postanovlenie_prokuror_ui.py"),
+                       "def _intake_check", "def _mark_request_sent")
+        self.assertIn("self.restart_requested.emit", block)
+
+
+class V63CloseCaseTests(unittest.TestCase):
+    """Кнопка «Закрыть обращение» на этапе 3."""
+
+    def test_button_exists_on_chain_tab(self):
+        src = _src("postanovlenie_prokuror_ui.py")
+        self.assertIn('QPushButton("Закрыть обращение")', src)
+        block = _block(src, "def _build_chain_tab", "def _refresh_chain_view")
+        self.assertIn("Закрыть обращение", block)
+
+    def test_close_marks_case_worked_off(self):
+        case = gc.GovCase(number="7")
+        case.appeal_raw = "текст"
+        case.set_outcome("accept")
+        case.set_work_node("3", answer="ПОСТАНОВИЛ: завершить производство", done=True)
+        self.assertTrue(case.close_work(reason="этап 3 выполнен",
+                                        when="25.11.2026 21:00"))
+        self.assertEqual(case.status, gc.STATUS_CLOSED)
+        self.assertEqual(case.closed_at, "25.11.2026 21:00")
+        row = gc.case_row(case)
+        self.assertTrue(row["closed"])
+        self.assertIn("отработано", row["status"])
+
+    def test_close_is_saved_and_restored(self):
+        case = gc.GovCase(number="7")
+        case.close_work(reason="готово", when="25.11.2026 21:00")
+        restored = gc.GovCase.from_dict(case.to_dict()) if hasattr(
+            gc.GovCase, "from_dict") else case
+        self.assertEqual(restored.closed_at, "25.11.2026 21:00")
+        self.assertEqual(restored.close_reason, "готово")
+
+    def test_close_requires_stage3_answer(self):
+        block = _block(_src("postanovlenie_prokuror_ui.py"),
+                       "def _close_case_requested", "def _save_current_step")
+        self.assertIn('ogp_stages.node_state(self.case, "3")', block)
+        self.assertIn("self.case_closed.emit", block)
+        self.assertIn("close_work", block)
+
+    def test_main_reacts_with_fresh_chat(self):
+        block = _block(_src("main.py"), "def _on_gov_case_closed",
+                       "def _on_gov_dialog_finished")
+        self.assertIn("_schedule_fresh_chat_after_answer", block)
+
+
+class V63PlanSourceTests(unittest.TestCase):
+    """План берётся из активного варианта цепочки, а не из отставшей копии."""
+
+    def test_current_plan_reads_active_chain(self):
+        case = gc.GovCase(number="1")
+        case.work_chains = [
+            {"letter": "A", "title": "A", "steps": [{"n": 1, "title": "a1"}],
+             "nodes": {}},
+            {"letter": "B", "title": "B",
+             "steps": [{"n": 1, "title": "b1"}, {"n": 2, "title": "b2"}],
+             "nodes": {}},
+        ]
+        case.work_letter = "B"
+        case.work_plan = [{"n": 1, "title": "a1"}]      # отставшая копия
+        self.assertEqual([step["title"] for step in case.current_plan()],
+                         ["b1", "b2"])
+        self.assertEqual(case.next_work_step(), 1)
+
+    def test_stages_module_uses_current_plan(self):
+        src = _src("ogp_stages.py")
+        self.assertIn("def _plan(case)", src)
+        self.assertNotIn("for step in case.work_plan", src)
+
+
+if __name__ == "__main__":
+    unittest.main()
