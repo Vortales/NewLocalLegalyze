@@ -338,6 +338,9 @@ class PostanovlenieProkuroraDialog(QDialog):
     #: очищается перед каждым шагом (решение пользователя по выгрузке
     #: «Обращение №1.7z»), а память дела ИИ получает из файла заявки.
     restart_requested = pyqtSignal(object, str)
+    #: v65 (решение пользователя `keep_draft`): нажата «Повторить отправку» —
+    #: сохранённая заявка уходит в чат ещё раз (страница снова очищается).
+    resend_requested = pyqtSignal()
     #: v63: нажата «Закрыть обращение» на этапе 3: (номер дела).
     case_closed = pyqtSignal(str)
 
@@ -486,6 +489,17 @@ class PostanovlenieProkuroraDialog(QDialog):
         self.facts_btn.clicked.connect(lambda _c=False: self._toggle_facts_window())
         buttons.addWidget(self.facts_btn)
         buttons.addStretch()
+        # v65 (решение пользователя `keep_draft`): если ИИ не ответил — заявка
+        # остаётся сохранённой, и её можно отправить ещё раз одной кнопкой, не
+        # собирая документ заново. Кнопка видна только пока запись жива.
+        self.resend_btn = QPushButton("Повторить отправку")
+        self.resend_btn.setToolTip(
+            "Отправить сохранённую заявку ещё раз: страница ИИ очистится, "
+            "файлы выгрузятся заново")
+        self.resend_btn.setVisible(False)
+        self.resend_btn.clicked.connect(
+            lambda _c=False: self.resend_requested.emit())
+        buttons.addWidget(self.resend_btn)
         # v61 (замечание пользователя): «Проверка ИИ» должна быть на месте «Сформировать»
         # «Сформировать» и называться «Этап 1»; как только этап 1 выполнен,
         # кнопка меняет название на «Этап 2», а после всей цепочки — на
@@ -1146,6 +1160,35 @@ class PostanovlenieProkuroraDialog(QDialog):
 
     # --------------------------------------------------- v62: состояние цепочки
 
+    def set_resend_available(self, available: bool, title: str = "") -> None:
+        """Показать/скрыть «Повторить отправку» (v65, решение `keep_draft`).
+
+        Клиент знает состояние записи отложенной отправки лучше формы, поэтому
+        кнопку включает он; форма лишь перерисовывает её при каждом обновлении
+        дела (`refresh_resend_button`).
+        """
+        button = getattr(self, "resend_btn", None)
+        if button is None:
+            return
+        button.setVisible(bool(available))
+        button.setEnabled(bool(available))
+        if available:
+            label = str(title or "").strip()
+            button.setToolTip(
+                "Отправить сохранённую заявку ещё раз: страница ИИ очистится, "
+                "файлы выгрузятся заново." +
+                (f"\nЗаявка: {label}" if label else ""))
+
+    def refresh_resend_button(self) -> None:
+        """Состояние кнопки повтора — по записи на диске (v65)."""
+        try:
+            record = pending_send.load(self._documents_root()) or {}
+        except Exception:
+            diag.exception("ui.pending_send.load")
+            record = {}
+        self.set_resend_available(pending_send.can_resend(record),
+                                  pending_send.describe(record))
+
     def _refresh_chain_view(self) -> None:
         """Перерисовывает три этапа по состоянию дела (v62)."""
         if not hasattr(self, "plan_list"):
@@ -1169,6 +1212,7 @@ class PostanovlenieProkuroraDialog(QDialog):
         self._refresh_chain_picker()
         self._refresh_plan_list()
         self._refresh_save_indicators()
+        self.refresh_resend_button()
         if hasattr(self, "etap3_label"):
             self.etap3_label.setText(self._stage3_hint(state))
 

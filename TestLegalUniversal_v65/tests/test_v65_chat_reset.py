@@ -314,6 +314,61 @@ class V65AlwaysReloadTests(unittest.TestCase):
         self.assertGreater(len(request), 2000)
 
 
+class V65KeepDraftTests(unittest.TestCase):
+    """Если ИИ не ответил, заявка остаётся и повторяется одной кнопкой."""
+
+    def test_pending_send_keeps_sent_and_failed_records(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            record = psend.build_record(kind="document", request_text="заявка")
+            psend.save(tmp, record)
+            psend.mark_sent(tmp, psend.load(tmp))
+            self.assertTrue(psend.record_path(tmp).exists())
+            self.assertFalse(psend.is_fresh(psend.load(tmp)))
+            psend.mark_failed(tmp, psend.load(tmp), reason="send")
+            self.assertTrue(psend.can_resend(psend.load(tmp)))
+            self.assertTrue(psend.is_fresh(psend.rearm(psend.load(tmp))))
+
+    def test_main_has_resend_slot_and_clears_on_answer(self):
+        main = _src("main.py")
+        self.assertIn("def _on_resend_pending_request", main)
+        self.assertIn("def _pending_answer_received", main)
+        self.assertIn("def _refresh_gov_resend_button", main)
+        # обе точки подключения сигнала формы
+        self.assertEqual(main.count(
+            "dlg.resend_requested.connect(self._on_resend_pending_request)"), 2)
+        # запись убирается, когда ответ разобран
+        intake = _method(main, "_apply_gov_intake")
+        self.assertIn('_pending_answer_received("1")', intake)
+        answer = _method(main, "_apply_gov_answer")
+        self.assertIn("_pending_answer_received(node_kind)", answer)
+
+    def test_failures_keep_the_draft(self):
+        main = _src("main.py")
+        retry = _method(main, "_reload_for_upload_retry")
+        self.assertIn("psend.STATE_FAILED", retry)
+        done = _method(main, "_on_pending_send_done")
+        self.assertIn("psend.STATE_FAILED", done)
+        finish = _method(main, "_pending_send_finish")
+        self.assertIn("psend.mark_failed", finish)
+        self.assertIn("Повторить отправку", finish)
+
+    def test_hard_timeout_points_to_the_button(self):
+        main = _src("main.py")
+        poll = _method(main, "_poll_document_answer")
+        self.assertIn("Повторить отправку", poll)
+
+    def test_form_has_resend_button_and_signal(self):
+        ui = _src("postanovlenie_prokuror_ui.py")
+        self.assertIn("resend_requested = pyqtSignal()", ui)
+        self.assertIn('self.resend_btn = QPushButton("Повторить отправку")', ui)
+        self.assertIn("self.resend_btn.setVisible(False)", ui)
+        self.assertIn("def set_resend_available", ui)
+        self.assertIn("def refresh_resend_button", ui)
+        view = _method(ui, "_refresh_chain_view")
+        self.assertIn("self.refresh_resend_button()", view)
+
+
 class V65PromptTests(unittest.TestCase):
     """Промт 1.36 выпущен рядом с 1.35 и согласован с клиентом."""
 

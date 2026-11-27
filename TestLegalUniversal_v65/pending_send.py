@@ -15,10 +15,15 @@
 
 * заявка не отправляется без файлов в чате: если промт и «Шаблон.txt» ещё не
   прикрепились (поток выгрузки идёт), отправка ждёт события о вложениях;
-* повторный запуск не отправляет заявку дважды: после успеха запись удаляется,
-  а факт отправки виден по состоянию `sent_at`;
+* повторный запуск не отправляет заявку дважды: отправленная запись переходит в
+  состояние `sent` и `is_fresh()` её больше не пропускает;
 * истёкшая заявка (клиент был закрыт надолго) не отправляется: иначе в чат
-  уходил бы старый запрос после случайного запуска.
+  уходил бы старый запрос после случайного запуска;
+* v65 (решение пользователя `keep_draft`): если ИИ не ответил — страница не
+  поднялась, кнопка отправки не активна, ответ не пришёл за отведённое время, —
+  заявка остаётся на диске (состояния `sent` и `failed`), и прокурор повторяет
+  её одной кнопкой «Повторить отправку» в форме. Убирает запись только
+  разобранный ответ ИИ (`main._pending_answer_received`) или отмена.
 
 Модуль намеренно не зависит от Qt и браузера: всё проверяется тестами.
 """
@@ -37,6 +42,9 @@ STATE_SENT = "sent"
 STATE_EXPIRED = "expired"
 #: Заявка отменена пользователем.
 STATE_CANCELLED = "cancelled"
+#: v65: заявка НЕ ушла в чат (страница не поднялась, отправка заблокирована).
+#: Запись остаётся на диске — её повторяют кнопкой «Повторить отправку».
+STATE_FAILED = "failed"
 
 #: Свежесть заявки: дольше этого срока после перезапуска она не отправляется.
 DEFAULT_MAX_AGE = 10 * 60
@@ -142,7 +150,9 @@ def is_fresh(record: dict, max_age: int = DEFAULT_MAX_AGE,
     """Заявка ещё актуальна? (не отправлялась и не старше max_age)."""
     if not record or not _clean(record.get("request_text")):
         return False
-    if record.get("state") == STATE_SENT:
+    # v65: отправленная и «не ушедшая» заявки автоматически не повторяются —
+    # только вручную, кнопкой «Повторить отправку» (`can_resend` + `rearm`).
+    if record.get("state") in (STATE_SENT, STATE_FAILED):
         return False
     created = float(record.get("created_at") or 0.0)
     if not created:
@@ -169,11 +179,54 @@ def describe(record: dict) -> str:
 
 
 def mark_sent(root, record: dict) -> dict:
-    """Фиксирует отправку и убирает запись: второй раз не отправим."""
+    """Фиксирует отправку: запись остаётся на диске в состоянии `sent`.
+
+    v65 (решение пользователя `keep_draft`): раньше запись удалялась, и если
+    ИИ не отвечал, прокурору приходилось заново собирать документ и заполнять
+    поля. Теперь заявка хранится до разбора ответа, а повторно её можно
+    отправить одной кнопкой. Автоматически она не уходит: `is_fresh()` для
+    состояния `sent` возвращает False.
+    """
     data = dict(record or {})
     data["state"] = STATE_SENT
     data["sent_at"] = time.time()
-    clear(root)
+    save(root, data)
+    return data
+
+
+def mark_failed(root, record: dict, reason: str = "") -> dict:
+    """Заявка не ушла в чат — запись остаётся, чтобы повторить её вручную (v65)."""
+    data = dict(record or {})
+    data["state"] = STATE_FAILED
+    data["failed_at"] = time.time()
+    data["fail_reason"] = _clean(reason)
+    save(root, data)
+    return data
+
+
+#: Состояния, из которых заявку можно отправить повторно вручную.
+RESENDABLE = (STATE_WAITING, STATE_SENT, STATE_EXPIRED, STATE_FAILED)
+
+
+def can_resend(record: dict) -> bool:
+    """Есть ли сохранённая заявка, которую можно отправить ещё раз (v65).
+
+    Срок свежести здесь не указ: повтор делает человек, а не автозапуск.
+    """
+    if not record or not _clean(record.get("request_text")):
+        return False
+    return str(record.get("state") or STATE_WAITING) in RESENDABLE
+
+
+def rearm(record: dict) -> dict:
+    """Та же заявка — снова готова к отправке (счётчик повторов растёт)."""
+    data = dict(record or {})
+    data["state"] = STATE_WAITING
+    data["created_at"] = time.time()
+    data["restarts"] = int(data.get("restarts") or 0) + 1
+    data.pop("sent_at", None)
+    data.pop("failed_at", None)
+    data.pop("fail_reason", None)
     return data
 
 

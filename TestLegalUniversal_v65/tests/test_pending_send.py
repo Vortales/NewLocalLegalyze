@@ -37,12 +37,55 @@ class PendingSendRecordTests(unittest.TestCase):
             self.assertEqual(ps.record_path(tmp), Path(tmp) / "pending_send.json")
 
     def test_sent_record_is_not_repeated(self):
+        """Отправленная заявка автоматически второй раз не уходит.
+
+        v65 (решение пользователя `keep_draft`): запись при этом остаётся на
+        диске — если ИИ не ответит, её повторяют кнопкой «Повторить отправку».
+        """
         with tempfile.TemporaryDirectory() as tmp:
             record = ps.build_record(kind="document", request_text="заявка")
             ps.save(tmp, record)
             ps.mark_sent(tmp, ps.load(tmp))
-            self.assertFalse(ps.record_path(tmp).exists())
-            self.assertFalse(ps.is_fresh(ps.load(tmp)))
+            saved = ps.load(tmp)
+            self.assertEqual(saved["state"], ps.STATE_SENT)
+            self.assertFalse(ps.is_fresh(saved))
+            self.assertTrue(ps.can_resend(saved))
+
+    def test_failed_send_keeps_the_record(self):
+        """Заявка не ушла в чат — она сохранена для ручного повтора (v65)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            record = ps.build_record(kind="document", request_text="заявка")
+            ps.save(tmp, record)
+            ps.mark_failed(tmp, ps.load(tmp), reason="send-button-disabled")
+            saved = ps.load(tmp)
+            self.assertEqual(saved["state"], ps.STATE_FAILED)
+            self.assertEqual(saved["fail_reason"], "send-button-disabled")
+            self.assertFalse(ps.is_fresh(saved))
+            self.assertTrue(ps.can_resend(saved))
+
+    def test_rearm_prepares_the_same_request(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = ps.build_record(kind="document", request_text="заявка",
+                                     source_path="заявка.txt")
+            ps.save(tmp, record)
+            ps.mark_failed(tmp, ps.load(tmp), reason="timeout")
+            again = ps.rearm(ps.load(tmp))
+            self.assertEqual(again["state"], ps.STATE_WAITING)
+            self.assertEqual(again["request_text"], "заявка")
+            self.assertEqual(again["source_path"], "заявка.txt")
+            self.assertEqual(again["restarts"], 1)
+            self.assertTrue(ps.is_fresh(again))
+            self.assertNotIn("fail_reason", again)
+
+    def test_cancelled_and_empty_records_are_not_resendable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ps.save(tmp, ps.build_record(kind="intake", request_text="   "))
+            self.assertFalse(ps.can_resend(ps.load(tmp)))
+            record = ps.build_record(kind="intake", request_text="проверка")
+            ps.save(tmp, record)
+            ps.mark_cancelled(tmp, ps.load(tmp))
+            self.assertFalse(ps.can_resend(ps.load(tmp)))
+            self.assertFalse(ps.can_resend({}))
 
     def test_stale_record_is_not_sent(self):
         with tempfile.TemporaryDirectory() as tmp:

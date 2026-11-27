@@ -5844,6 +5844,10 @@ class MainWindow(QMainWindow):
             # чистый чат, потом заявка (см. `_on_pending_send_restart`).
             if hasattr(dlg, "restart_requested"):
                 dlg.restart_requested.connect(self._on_pending_send_restart)
+            # v65 (`keep_draft`): «Повторить отправку» — у формы IAD тот же
+            # порядок, если сигнал в ней есть.
+            if hasattr(dlg, "resend_requested"):
+                dlg.resend_requested.connect(self._on_resend_pending_request)
             # v56: форма не закрывается по «Сформировать» и обновляется по
             # ответу ИИ (как окно «Постановление Обращение №» у Прокурора).
             if hasattr(dlg, "finished"):
@@ -5908,6 +5912,7 @@ class MainWindow(QMainWindow):
             # сразу — клиент перезапускается с чистым чатом, и уже после
             # перезапуска заявка уходит в ИИ.
             dlg.restart_requested.connect(self._on_pending_send_restart)
+            dlg.resend_requested.connect(self._on_resend_pending_request)
             # v64: «Сформировать» — это ЗАЯВКА НА ДОКУМЕНТ в чат (решение
             # пользователя), поэтому отдельного сигнала печати нет: .png
             # собирает `_apply_gov_answer` из ответа ИИ.
@@ -6129,18 +6134,83 @@ class MainWindow(QMainWindow):
                          THEME["accent"])
         self._restart_browser_for_fresh_chat()
 
-    def _pending_send_record(self):
-        """Актуальная отложенная заявка (или пустой словарь)."""
+    def _pending_send_record(self, allow_stale: bool = False):
+        """Актуальная отложенная заявка (или пустой словарь).
+
+        v65 (`keep_draft`): `allow_stale=True` возвращает запись даже
+        устаревшую и уже отправленную — так «Повторить отправку» поднимает
+        заявку, которую человек нажимает сам, а не автозапуск.
+        """
         try:
             record = psend.load(self._documents_root())
         except Exception:
             diag.exception("main.pending_send.load")
             return {}
+        if allow_stale:
+            return record
         if not psend.is_fresh(record):
             if record:
                 diag.event("pending_send.stale", kind=record.get("kind"))
-            return record if psend.is_fresh(record) else {}
+            return {}
         return record
+
+    @pyqtSlot()
+    def _on_resend_pending_request(self) -> None:
+        """«Повторить отправку»: та же заявка уходит ещё раз (v65).
+
+        Решение пользователя: если после перезагрузки страницы ИИ не ответил,
+        заявка остаётся в записи отложенной отправки, а прокурор повторяет её
+        одной кнопкой — заново собирать документ и заполнять поля не нужно.
+        """
+        record = self._pending_send_record(allow_stale=True)
+        if not psend.can_resend(record):
+            self._set_status("Сохранённой заявки нет — нажмите кнопку этапа "
+                             "заново", "#f59e0b")
+            diag.event("pending_send.resend_empty")
+            return
+        source = str(record.get("source_path") or "")
+        record = psend.rearm(record)
+        diag.event("pending_send.resend", kind=record.get("kind"),
+                   node=record.get("node_kind") or record.get("stage_kind"),
+                   restarts=record.get("restarts"))
+        self._on_pending_send_restart(record, source)
+
+    def _pending_answer_received(self, node: str = "") -> None:
+        """Ответ ИИ разобран — сохранённую заявку можно убрать (v65).
+
+        До этого момента запись живёт на диске: по ней форма показывает
+        «Повторить отправку», если ответ так и не пришёл.
+        """
+        try:
+            record = psend.load(self._documents_root()) or {}
+        except Exception:
+            diag.exception("main.pending_send.load")
+            return
+        if not record:
+            return
+        saved_node = str(record.get("node_kind") or record.get("stage_kind") or "")
+        if node and saved_node and saved_node != str(node):
+            return                      # ответ не по этой заявке — не трогаем
+        psend.clear(self._documents_root())
+        self._pending_send_record_data = {}
+        diag.event("pending_send.answered", kind=record.get("kind"),
+                   node=saved_node)
+
+    def _refresh_gov_resend_button(self) -> None:
+        """«Повторить отправку» в открытой форме: видна, пока заявка жива (v65).
+
+        Решение пользователя `keep_draft`: если ИИ не ответил, заявка остаётся
+        в записи отложенной отправки, и прокурор повторяет её одной кнопкой.
+        """
+        dialog = getattr(self, "_gov_dialog", None)
+        if dialog is None or not hasattr(dialog, "set_resend_available"):
+            return
+        try:
+            record = psend.load(self._documents_root()) or {}
+            dialog.set_resend_available(psend.can_resend(record),
+                                        psend.describe(record))
+        except Exception:
+            diag.exception("gov.resend.refresh")
 
     def _remember_gov_dialog_visibility(self) -> bool:
         """Форма «Постановление» открыта до перезапуска браузера (v49)."""
@@ -6578,8 +6648,11 @@ class MainWindow(QMainWindow):
         diag.event("upload.reload_retry", reason=str(reason), attempt=count)
         if ugate.reloads_exhausted(count):
             diag.event("upload.send_blocked", reason=str(reason), attempt=count)
-            self._set_status(ugate.blocked_text(), THEME["danger"])
-            self._pending_send_finish(psend.STATE_EXPIRED)
+            self._set_status(ugate.blocked_text() + " Заявка сохранена — "
+                             "в форме доступна «Повторить отправку».",
+                             THEME["danger"])
+            # v65 (`keep_draft`): заявка не ушла, но выбрасывать её нельзя.
+            self._pending_send_finish(psend.STATE_FAILED, reason=str(reason))
             return
         self._set_status(ugate.status_text(ugate.REASON_RELOAD), THEME["accent"])
         self._pending_send_started_at = time.monotonic()
@@ -6735,7 +6808,9 @@ class MainWindow(QMainWindow):
             # (`_doc_request_mode`), поэтому просто включаем опрос.
             self._watch_document_answer()
             return
-        self._pending_send_finish(psend.STATE_EXPIRED, record)
+        # v65 (`keep_draft`): текст в поле запроса не вставился или кнопка
+        # «Отправить» так и не стала активной — заявка остаётся сохранённой.
+        self._pending_send_finish(psend.STATE_FAILED, record, reason="send")
 
     def _request_key(self) -> str:
         """Ключ заявки: по нему видно, что это ТА ЖЕ заявка (v44).
@@ -6763,19 +6838,30 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-    def _pending_send_finish(self, state, record=None):
-        """Заявка отправлена/устарела: убрать её, чтобы не отправить дважды."""
+    def _pending_send_finish(self, state, record=None, reason=""):
+        """Исход отправки: `sent` / `failed` — запись остаётся, прочее — убрать.
+
+        v65 (решение пользователя `keep_draft`): заявка хранится до разбора
+        ответа ИИ. Отправленная запись переходит в состояние `sent` и
+        автоматически больше не уходит (`is_fresh` → False), а не ушедшая — в
+        `failed`; в обоих случаях форма предлагает «Повторить отправку».
+        """
         self._pending_send_stop()
         record = record if record is not None else getattr(
             self, "_pending_send_record_data", {}) or {}
+        title = psend.describe(record) or "Заявка"
         try:
             if state == psend.STATE_SENT:
                 psend.mark_sent(self._documents_root(), record)
-                title = psend.describe(record) or "Заявка"
                 self._set_status(f"Заявка отправлена ИИ: {title}", THEME["ok"])
                 # v48: заявка ушла в чат — держать её во вложениях больше
                 # незачем, иначе после обновления окна она прикрепится снова.
                 self._drop_document_attachment("sent")
+            elif state == psend.STATE_FAILED:
+                psend.mark_failed(self._documents_root(), record, reason=reason)
+                self._set_status(f"{title}: заявка не ушла в чат. Она "
+                                 "сохранена — нажмите «Повторить отправку» "
+                                 "в форме постановления.", "#f59e0b")
             else:
                 psend.clear(self._documents_root())
                 self._set_status("Отложенная заявка не отправлена — "
@@ -6784,6 +6870,7 @@ class MainWindow(QMainWindow):
             diag.exception("main.pending_send.finish")
         self._pending_send_record_data = {}
         self._keep_attachments = False
+        self._refresh_gov_resend_button()
 
     def _drop_document_attachment(self, reason=""):
         """Заявка отправлена — убираем её из вложений (v48).
@@ -7100,8 +7187,10 @@ class MainWindow(QMainWindow):
             self._doc_watch_timer.stop()
             diag.event("documents.watch_timeout",
                        mode=getattr(self, "_doc_request_mode", ""))
-            self._set_status("Ответ с постановлением не пришёл — откройте «Документы»",
-                             "#f59e0b")
+            self._set_status("Ответ с постановлением не пришёл. Заявка "
+                             "сохранена — нажмите «Повторить отправку» в форме "
+                             "или откройте «Документы».", "#f59e0b")
+            self._refresh_gov_resend_button()
             return
         if now > getattr(self, "_doc_watch_deadline", 0) and \
                 not getattr(self, "_doc_watch_hinted", False):
@@ -7328,6 +7417,9 @@ class MainWindow(QMainWindow):
             return True
         self._gov_intake_handled = text
         self._gov_intake_watch_stop()
+        # v65 (`keep_draft`): ответ этапа 1 разобран — сохранённая заявка
+        # больше не нужна, «Повторить отправку» гаснет.
+        self._pending_answer_received("1")
         store = self._document_case_store()
         case = store.find(self._gov_intake_case)
         if case is None:
@@ -7731,6 +7823,8 @@ class MainWindow(QMainWindow):
         # v62: узел цепочки («1», «2.1», «3»). Он приходит из записи
         # отложенной отправки — форма кладёт туда `stage_kind` вида «2.1».
         node_kind = str(getattr(self, "_doc_node_kind", "") or "").strip()
+        # v65 (`keep_draft`): ответ по заявке разобран — запись убираем.
+        self._pending_answer_received(node_kind)
 
         try:
             # v53: папка документа — внутри папки обращения «Обращение №N».
